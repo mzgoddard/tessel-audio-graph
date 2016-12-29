@@ -1,0 +1,3 @@
+struct Gate {}
+
+struct Gated {}
