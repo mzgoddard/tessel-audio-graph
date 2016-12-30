@@ -1,4 +1,4 @@
-use super::{Node, RingBuffer, copy_out};
+use super::{Node, RingBuffer, copy_out_ring};
 
 type CaptureFn = Box<FnMut(&mut RingBuffer)>;
 
@@ -21,8 +21,9 @@ impl Node for Capture {
         let (mut ring, mut buffer) = self.tmp_state.take().unwrap();
         (self.callback)(&mut ring);
         let avail = ring.len();
-        ring.read_into(avail, &mut buffer);
-        copy_out(avail, &buffer, outputs);
+        // ring.read_into(avail, &mut buffer);
+        // copy_out(avail, &buffer, outputs);
+        copy_out_ring(avail, &mut buffer, &mut ring, outputs);
         self.tmp_state = Some((ring, buffer));
     }
 }

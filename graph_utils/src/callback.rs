@@ -1,4 +1,4 @@
-use super::{Node, RingBuffer, copy_out, BaseMix};
+use super::{Node, RingBuffer, copy_out_ring, BaseMix};
 
 type CallbackFn = Box<FnMut(&mut RingBuffer, &mut RingBuffer)>;
 
@@ -20,13 +20,21 @@ impl Callback {
 
 impl Node for Callback {
     fn update(&mut self, inputs: &mut [RingBuffer], outputs: &mut [RingBuffer]) {
-        let in_avail = self.base_mix.mix_inputs(inputs);
         let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
-        in_buffer.write_from(in_avail, &self.base_mix.accum);
-        (self.callback)(&mut in_buffer, &mut out_buffer);
-        let out_avail = out_buffer.len();
-        out_buffer.read_into(out_avail, &mut sub_buffer);
-        copy_out(out_avail, &sub_buffer, outputs);
+        self.base_mix.mix_inputs_ring(inputs, &mut in_buffer);
+        // in_buffer.write_from(in_avail, &self.base_mix.accum);
+        // if outputs.len() == 1 {
+        //     (self.callback)(&mut in_buffer, &mut outputs[0]);
+        // }
+        // else {
+            // print!("{:?} ", out_buffer.buffer.as_ptr());
+            out_buffer.active = in_buffer.active;
+            (self.callback)(&mut in_buffer, &mut out_buffer);
+            let out_avail = out_buffer.len();
+            // out_buffer.read_into(out_avail, &mut sub_buffer);
+            // copy_out(out_avail, &sub_buffer, outputs);
+            copy_out_ring(out_avail, &mut sub_buffer, &mut out_buffer, outputs);
+        // }
         self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
     }
 }

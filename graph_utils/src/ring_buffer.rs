@@ -3,15 +3,17 @@ use std::cmp::min;
 #[derive(Debug)]
 pub struct RingBuffer {
     pub max_length: usize,
+    pub active: bool,
     start_index: usize,
     end_index: usize,
-    buffer: Vec<i16>,
+    pub buffer: Vec<i16>,
 }
 
 impl Default for RingBuffer {
     fn default() -> RingBuffer {
         RingBuffer {
-            max_length: 1024,
+            max_length: 32768,
+            active: true,
             start_index: 0,
             end_index: 0,
             buffer: Vec::<i16>::new(),
@@ -34,9 +36,11 @@ impl RingBuffer {
 
     pub fn len(&self) -> usize {
         if self.start_index > self.end_index {
+            assert!(self.max_length + 1 - self.start_index + self.end_index >= 0);
             self.max_length + 1 - self.start_index + self.end_index
         }
         else {
+            assert!(self.end_index - self.start_index >= 0);
             self.end_index - self.start_index
         }
     }
@@ -47,6 +51,7 @@ impl RingBuffer {
     }
 
     pub fn read_into(&mut self, amount: usize, buffer: &mut Vec<i16>) -> usize {
+        assert!(amount >= 0);
         let amount_avail = min(amount, self.len());
         for _ in (buffer.len())..amount_avail {
             buffer.push(0);
@@ -62,6 +67,7 @@ impl RingBuffer {
     }
 
     pub fn write_from(&mut self, amount: usize, buffer: &Vec<i16>) -> usize {
+        assert!(amount >= 0);
         let amount_avail = min(min(amount, buffer.len()), self.max_length);
         for _ in self.buffer.len()..min(self.end_index + amount_avail + 1, self.max_length + 1) {
             self.buffer.push(0);
@@ -83,6 +89,7 @@ impl RingBuffer {
     }
 
     pub fn write_from_ring(&mut self, amount: usize, ring: &mut RingBuffer) -> usize {
+        assert!(amount >= 0);
         let amount_avail = min(min(amount, ring.len()), self.max_length);
         for _ in self.buffer.len()..min(self.end_index + amount_avail + 1, self.max_length + 1) {
             self.buffer.push(0);

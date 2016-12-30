@@ -72,6 +72,7 @@ impl Graph {
             let output_index = outputs.len();
             outputs.push(Some(RingBuffer::new()));
             self.nodes[output_id].input_ids.push((gnode.id, output_index));
+            println!("{:?} {:?}", output_id, self.nodes[output_id].input_ids);
         }
 
         if let Some(ref mut outputs_cache) = self.outputs_cache {
@@ -99,9 +100,11 @@ impl Graph {
         let mut outputs = self.outputs.take().unwrap();
         let mut outputs_cache = self.outputs_cache.take().unwrap();
 
+        // println!("");
         for node in self.nodes.iter_mut().rev() {
             // fetch input buffers from output cache
             for &(ref output_id, ref output_index) in node.input_ids.iter() {
+                // print!("{:?} {:?} ", output_id, output_index);
                 if let Some(ref mut node_outputs) = outputs_cache[*output_id] {
                     inputs.push(node_outputs[*output_index].take().unwrap());
                 }
@@ -110,16 +113,20 @@ impl Graph {
             // update node
             let mut node_outputs = outputs_cache[node.id].take().unwrap();
             for i in 0..node_outputs.len() {
+                // print!("{:?} ", i);
                 outputs.push(node_outputs[i].take().unwrap());
+                // print!("{:?} ", outputs[i].buffer.as_ptr());
             }
             node.node.update(&mut inputs, &mut outputs);
             for i in (0..node_outputs.len()).rev() {
+                // print!("{:?} ", i);
                 node_outputs[i] = Some(outputs.pop().unwrap());
             }
             outputs_cache[node.id] = Some(node_outputs);
 
             // restore input buffers
             for &(ref output_id, ref output_index) in node.input_ids.iter().rev() {
+                // print!("{:?} {:?} ", output_id, output_index);
                 if let Some(ref mut node_outputs) = outputs_cache[*output_id] {
                     node_outputs[*output_index] = Some(inputs.pop().unwrap());
                 }

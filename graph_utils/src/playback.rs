@@ -21,8 +21,7 @@ impl Playback {
 impl Node for Playback {
     fn update(&mut self, inputs: &mut [RingBuffer], _: &mut [RingBuffer]) {
         let mut ring = self.tmp_state.take().unwrap();
-        let avail = self.base_mix.mix_inputs(inputs);
-        ring.write_from(avail, &self.base_mix.accum);
+        self.base_mix.mix_inputs_ring(inputs, &mut ring);
         (self.callback)(&mut ring);
         self.tmp_state = Some(ring);
     }
