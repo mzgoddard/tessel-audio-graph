@@ -8,22 +8,41 @@ extern crate libusb;
 extern crate alsa;
 // Import the graph_utils library
 extern crate graph_utils;
+// Import the http server library
+extern crate iron;
+// Import the router library
+#[macro_use(router)]
+extern crate router;
+
 // Import the Tessel API
 use tessel::Tessel;
 // Import sleep from the standard lib
-use std::thread::sleep;
+use std::thread::{sleep, yield_now};
 // Import durations from the standard lib
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use std::cmp::min;
+use std::cmp::{min, max};
+
+use std::string::String;
+
+use std::thread;
+use std::sync::*;
+use std::slice;
+use std::io::Read;
 
 use std::ffi::CString;
 use alsa::device_name::HintIter;
+use alsa::card;
 
 use alsa::{Direction, ValueOr};
 use alsa::pcm::{PCM, HwParams, SwParams, Format, Access, State};
 
 use graph_utils::*;
+
+use iron::prelude::*;
+use iron::status;
+
+use router::*;
 
 struct AlsaHwParams {
     channels: u32,
@@ -108,7 +127,7 @@ fn main() {
     let mut tessel = Tessel::new();
 
     // Turn on one of the LEDs
-    tessel.led[2].on().unwrap();
+    // tessel.led[2].on().unwrap();
 
     println!("I'm blinking! (Press CTRL + C to stop)");
 
@@ -191,44 +210,145 @@ fn main() {
     {
         let mut graph = Graph::new();
 
+        let hint_mutex = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hint_mutex_clone = hint_mutex.clone();
+
+        thread::spawn(move || {
+            // let mut buffer = Vec::new();
+            loop {
+                // for _ in 0..buffer.len() {
+                //     buffer.pop().unwrap();
+                // }
+
+                // let now = Instant::now();
+                // let mut step_start = Instant::now();
+                // for card_result in card::Iter::new() {
+                //     if let Ok(card) = card_result {
+                //         if let Ok(ref name) = card.get_name() {
+                //             buffer.push(name.clone());
+                //         }
+                //         else {
+                //             break;
+                //         }
+                //     }
+                //     else {
+                //         break;
+                //     }
+                //     // println!("step {:?}", Instant::now().duration_since(step_start).subsec_nanos());
+                //     yield_now();
+                //     // step_start = Instant::now();
+                // }
+                // println!("search {:?}", Instant::now().duration_since(now).subsec_nanos());
+
+                // for x in HintIter::new(None, &*CString::new("pcm").unwrap()).unwrap() {
+                //     if let Some(ref name) = x.name {
+                //         buffer.push(name.clone());
+                //     }
+                //     yield_now();
+                // }
+
+                // println!("cards {:?}", buffer);
+
+                if let Ok(mut hints) = hint_mutex_clone.lock() {
+                    for _ in 0..(*hints).len() {
+                        (*hints).pop().unwrap();
+                    }
+                    for card_result in card::Iter::new() {
+                        if let Ok(card) = card_result {
+                            if let Ok(ref name) = card.get_name() {
+                                (*hints).push(name.clone());
+                            }
+                            else {
+                                break;
+                            }
+                        }
+                        else {
+                            break;
+                        }
+                        // println!("step {:?}", Instant::now().duration_since(step_start).subsec_nanos());
+                        yield_now();
+                        // step_start = Instant::now();
+                    }
+
+                    // for _ in (*hints).len()..buffer.len() {
+                    //     (*hints).push(String::new());
+                    // }
+                    // for _ in buffer.len()..(*hints).len() {
+                    //     (*hints).pop().unwrap();
+                    // }
+                    // (*hints).clone_from_slice(buffer.as_slice());
+                }
+
+                sleep(Duration::from_millis(2500));
+            }
+        });
+
         let alsa_playback = |card: AlsaCard| {
             let mut maybe_pcm_io = None;
             let mut buffer = Vec::new();
             let pcm_period = card.hw_params.period_size as usize;
             let pcm_max = pcm_period * card.hw_params.periods as usize;
+            let hint_mutex_playback = hint_mutex.clone();
+            let mut cooloff = false;
+            let mut cooloff_start = Instant::now();
 
             Box::new(Playback::new(Box::new(move |input| {
                 if maybe_pcm_io.is_none() {
-                    let hint = HintIter::new(None, &*CString::new("pcm").unwrap()).unwrap().find(|x| {
-                        if let Some(ref name) = x.name {
-                            name == card.pcm_hint
+                    // let hint = HintIter::new(None, &*CString::new("pcm").unwrap()).unwrap().find(|x| {
+                    //     if let Some(ref name) = x.name {
+                    //         name == card.pcm_hint
+                    //     }
+                    //     else {
+                    //         false
+                    //     }
+                    // });
+                    if cooloff {
+                        if Instant::now().duration_since(cooloff_start).as_secs() > 1 {
+                            cooloff = false;
                         }
                         else {
-                            false
+                            return;
                         }
-                    });
+                    }
+
+                    let hint = if let Ok(mut hints) = hint_mutex_playback.try_lock() {
+                        if let Some(hint) = (*hints).iter().find(|hint| {
+                            **hint == card.pcm_hint
+                        }).map(|x| x.clone()) {
+                            for _ in 0..hints.len() {
+                                (*hints).pop().unwrap();
+                            }
+                            Some(hint)
+                        }
+                        else {
+                            None
+                        }
+                    }
+                    else {
+                        None
+                    };
 
                     if hint.is_some() {
                         if let Ok(mut pcm) = PCM::open(&*CString::new(card.pcm_name).unwrap(), Direction::Playback, true) {
                             card.hw_params.set_params(&pcm);
                             card.sw_params.set_params(&pcm);
 
-                            println!("connect toslink16 output");
+                            println!("connect {:?} playback", card.pcm_name);
 
+                            input.clear();
                             maybe_pcm_io = Some(pcm);
                         }
-                        else {
-                            input.clear();
-                        }
-                    }
-                    else {
-                        input.clear();
                     }
                 }
                 let mut unset = false;
                 if let Some(ref mut pcm) = maybe_pcm_io {
                     if let Ok(status) = pcm.status() {
-                        if status.get_state() == State::Disconnected || status.get_state() == State::XRun {
+                        if status.get_state() == State::Disconnected {
+                            println!("disconnected {:?} playback", card.pcm_name);
+                            unset = true;
+                        }
+                        else if status.get_state() == State::XRun {
+                            println!("overrun {:?} playback", card.pcm_name);
                             unset = true;
                         }
                     }
@@ -238,6 +358,8 @@ fn main() {
                 }
                 if unset {
                     maybe_pcm_io = None;
+                    cooloff = true;
+                    cooloff_start = Instant::now();
                 }
                 if let Some(ref mut pcm) = maybe_pcm_io {
                     let mut buffer_avail = input.len() / 2;
@@ -258,11 +380,13 @@ fn main() {
                             input.read_into(avail * 2, &mut buffer);
                             if let Ok(io) = pcm.io_i16() {
                                 if let Err(_) = io.writei(&buffer[..(avail * 2)]) {
+                                    println!("error writing {:?} playback", card.pcm_name);
                                     unset = true;
                                 }
                                 // print!("p{:?}", avail);
                             }
                             else {
+                                println!("error creating io {:?} playback", card.pcm_name);
                                 unset = true;
                             }
                         }
@@ -272,35 +396,68 @@ fn main() {
                         }
                     }
                     else {
+                        println!("error checking avail {:?} playback", card.pcm_name);
                         unset = true;
                     }
                 }
                 if unset {
                     maybe_pcm_io = None;
+                    cooloff = true;
+                    cooloff_start = Instant::now();
                 }
             })))
         };
 
         let alsa_capture = |card: AlsaCard| {
             let mut active_capture = None;
+            let hint_mutex_capture = hint_mutex.clone();
+            let mut cooloff = false;
+            let mut cooloff_start = Instant::now();
 
             Box::new(Capture::new(Box::new(move |output| {
+                output.active = false;
                 if active_capture.is_none() {
-                    let hint = HintIter::new(None, &*CString::new("pcm").unwrap()).unwrap().find(|x| {
-                        if let Some(ref name) = x.name {
-                            name == card.pcm_hint
+                    // let now = Instant::now();
+                    // let hint = HintIter::new(None, &*CString::new("pcm").unwrap()).unwrap().find(|x| {
+                    //     if let Some(ref name) = x.name {
+                    //         name == card.pcm_hint
+                    //     }
+                    //     else {
+                    //         false
+                    //     }
+                    // });
+                    if cooloff {
+                        if Instant::now().duration_since(cooloff_start).as_secs() > 0 {
+                            cooloff = false;
                         }
                         else {
-                            false
+                            return;
                         }
-                    });
+                    }
+                    let hint = if let Ok(mut hints) = hint_mutex_capture.try_lock() {
+                        if let Some(hint) = (*hints).iter().find(|hint| {
+                            **hint == card.pcm_hint
+                        }).map(|x| x.clone()) {
+                            for _ in 0..hints.len() {
+                                (*hints).pop().unwrap();
+                            }
+                            Some(hint)
+                        }
+                        else {
+                            None
+                        }
+                    }
+                    else {
+                        None
+                    };
+                    // println!("search {:?} {:?}", card.pcm_name, Instant::now().duration_since(now));
 
                     let mut maybe_pcm = if hint.is_some() {
                         if let Ok(pcm) = PCM::open(&*CString::new(card.pcm_name).unwrap(), Direction::Capture, true) {
                             card.hw_params.set_params(&pcm);
                             card.sw_params.set_params(&pcm);
 
-                            println!("connect toslink16 input");
+                            println!("connect {:?} capture", card.pcm_name);
                             Some(pcm)
                         }
                         else {
@@ -313,12 +470,22 @@ fn main() {
 
                     if let Some(pcm) = maybe_pcm.take() {
                         let mut buffer = Vec::new();
+                        let mut reading = false;
+
+                        output.clear();
+                        let pcm_name = card.pcm_name.clone();
+                        let start_threshold = card.sw_params.start_threshold as usize;
 
                         active_capture = Some(Box::new(move |output: &mut RingBuffer| {
                             let mut unset = false;
                             let mut cont = if let Ok(status) = pcm.status() {
-                                if status.get_state() == State::Disconnected || status.get_state() == State::XRun {
-                                    println!("disconnected or overrun");
+                                if status.get_state() == State::Disconnected {
+                                    println!("disconnected {:?} capture", pcm_name);
+                                    unset = true;
+                                    false
+                                }
+                                else if status.get_state() == State::XRun {
+                                    println!("overrun {:?} capture", pcm_name);
                                     unset = true;
                                     false
                                 }
@@ -327,7 +494,7 @@ fn main() {
                                 }
                             }
                             else {
-                                println!("error checking status");
+                                println!("error checking status {:?} capture", pcm_name);
                                 unset = true;
                                 false
                             };
@@ -339,7 +506,7 @@ fn main() {
                                 match pcm.avail().map(|x| x as usize) {
                                     Ok(avail) => Some(avail),
                                     Err(_) => {
-                                        println!("error checking available");
+                                        println!("error checking available {:?} capture", pcm_name);
                                         unset = true;
                                         None
                                     }
@@ -353,7 +520,7 @@ fn main() {
                                     match pcm.io_i16() {
                                         Ok(io) => Some(io),
                                         Err(_) => {
-                                            println!("error creating io");
+                                            println!("error creating io {:?} capture", pcm_name);
                                             unset = true;
                                             None
                                         }
@@ -367,16 +534,24 @@ fn main() {
                                 None
                             };
                             let maybe_read = if let (Some(avail), Some(io)) = (maybe_avail, maybe_io) {
-                                for _ in buffer.len()..(avail * 2) {
-                                    buffer.push(0 as i16);
+                                if !reading && avail >= start_threshold {
+                                    reading = true;
                                 }
-                                match io.readi(&mut buffer[..(avail * 2)]) {
-                                    Ok(read) => Some(read),
-                                    Err(_) => {
-                                        println!("error reading");
-                                        unset = true;
-                                        None
+                                if reading {
+                                    for _ in buffer.len()..(avail * 2) {
+                                        buffer.push(0 as i16);
                                     }
+                                    match io.readi(&mut buffer[..(avail * 2)]) {
+                                        Ok(read) => Some(read),
+                                        Err(_) => {
+                                            println!("error reading {:?} capture", pcm_name);
+                                            unset = true;
+                                            None
+                                        }
+                                    }
+                                }
+                                else {
+                                    None
                                 }
                             }
                             else {
@@ -391,6 +566,7 @@ fn main() {
                 }
                 else {
                     let unset = if let Some(ref mut capture) = active_capture {
+                        output.active = true;
                         capture(output)
                     }
                     else {
@@ -398,32 +574,80 @@ fn main() {
                     };
                     if unset {
                         active_capture = None;
+                        cooloff = true;
+                        cooloff_start = Instant::now();
                     }
                 }
             })))
         };
 
+        let duck = |peak| {
+            let mut buffer = Vec::new();
+            let mut active = false;
+            let mut last_peak = Instant::now();
+            Box::new(Callback::new(Box::new(move |input, output| {
+                let avail = input.len();
+                let amount = input.read_into(avail, &mut buffer);
+                for i in 0..amount {
+                    if buffer[i] > peak {
+                        active = true;
+                        last_peak = Instant::now();
+                    }
+                }
+                if active {
+                    output.write_from(amount, &buffer);
+                    if Instant::now().duration_since(last_peak).as_secs() > 1 {
+                        active = false;
+                    }
+                }
+                else {
+                    for i in 0..amount {
+                        buffer[i] = 0;
+                    }
+                    output.write_from(amount, &buffer);
+                }
+            })))
+        };
+
+        let volume = |(num, denom): (i16, i16)| {
+            let mut buffer = Vec::new();
+            Box::new(Callback::new(Box::new(move |input, output| {
+                let avail = input.len();
+                let amount = input.read_into(avail, &mut buffer);
+                for i in 0..amount {
+                    buffer[i] = buffer[i] * num / denom;
+                }
+                output.write_from(amount, &buffer);
+            })))
+        };
+
         let toslink_out_id = graph.connect(alsa_playback(AlsaCard {
             pcm_name: "toslink16",
-            pcm_hint: "default:CARD=USBStreamer",
+            // pcm_hint: "default:CARD=USBStreamer",
+            pcm_hint: "USBStreamer",
             hw_params: AlsaHwParams {
-                period_size: 192,
-                periods: 8,
+                period_size: 96,
+                periods: 32,
                 ..Default::default()
             },
             sw_params: AlsaSwParams {
-                avail_min: 192 * 4,
-                start_threshold: 192 * 4,
+                avail_min: 96 * 4,
+                start_threshold: 96 * 4,
             },
         }), GraphNodeParams { ..Default::default() });
 
         let toslink_in_id = graph.connect(alsa_capture(AlsaCard {
             pcm_name: "toslink16",
-            pcm_hint: "default:CARD=USBStreamer",
+            // pcm_hint: "default:CARD=USBStreamer",
+            pcm_hint: "USBStreamer",
             hw_params: AlsaHwParams {
                 period_size: 48,
-                periods: 8,
+                periods: 64,
                 ..Default::default()
+            },
+            sw_params: AlsaSwParams {
+                avail_min: 96 * 4,
+                start_threshold: 96 * 4,
             },
             ..Default::default()
         }), GraphNodeParams {
@@ -431,157 +655,304 @@ fn main() {
             ..Default::default()
         });
 
-        let transmitter_out_id = graph.connect(alsa_playback(AlsaCard {
-            pcm_name: "transmitter",
-            pcm_hint: "default:CARD=Transmitter",
+        let device_out_id = graph.connect(alsa_playback(AlsaCard {
+            pcm_name: "front:CARD=Device,DEV=0",
+            pcm_hint: "USB Sound Device",
             hw_params: AlsaHwParams {
-                period_size: 192,
-                periods: 8,
+                period_size: 96,
+                periods: 32,
+                ..Default::default()
+            },
+            // sw_params: AlsaSwParams {
+            //     avail_min: 96 * 2,
+            //     start_threshold: 96 * 2,
+            // },
+            ..Default::default()
+        }), GraphNodeParams { ..Default::default() });
+
+        // let device_out_id = graph.connect(alsa_playback(AlsaCard {
+        //     pcm_name: "ps4",
+        //     pcm_hint: "USB Audio Device",
+        //     hw_params: AlsaHwParams {
+        //         period_size: 768,
+        //         periods: 32,
+        //         ..Default::default()
+        //     },
+        //     // sw_params: AlsaSwParams {
+        //     //     avail_min: 96 * 2,
+        //     //     start_threshold: 96 * 2,
+        //     // },
+        //     ..Default::default()
+        // }), GraphNodeParams { ..Default::default() });
+
+        let transmitter_out_id = graph.connect(alsa_playback(AlsaCard {
+            pcm_name: "front:CARD=Transmitter,DEV=0",
+            // pcm_hint: "default:CARD=Transmitter",
+            pcm_hint: "ASTRO Wireless Transmitter",
+            hw_params: AlsaHwParams {
+                period_size: 96,
+                periods: 32,
                 ..Default::default()
             },
             sw_params: AlsaSwParams {
-                avail_min: 192 * 4,
-                start_threshold: 192 * 4,
+                avail_min: 96 * 2,
+                start_threshold: 96 * 2,
             },
+            ..Default::default()
         }), GraphNodeParams { ..Default::default() });
 
-        let transmitter_in_id = graph.connect(alsa_capture(AlsaCard {
-            pcm_name: "streammic",
-            pcm_hint: "default:CARD=On",
+        let device_duck_in_id = graph.connect(duck(2000), GraphNodeParams {
+            to: vec!(transmitter_out_id),
+            ..Default::default()
+        });
+
+        let device_in_id = graph.connect(alsa_capture(AlsaCard {
+            pcm_name: "front:CARD=Device,DEV=0",
+            pcm_hint: "USB Sound Device",
             hw_params: AlsaHwParams {
-                period_size: 48,
-                periods: 8,
+                period_size: 96,
+                periods: 32,
                 ..Default::default()
+            },
+            sw_params: AlsaSwParams {
+                avail_min: 96 * 2,
+                start_threshold: 96 * 2,
             },
             ..Default::default()
         }), GraphNodeParams {
+            to: vec!(device_duck_in_id),
+            ..Default::default()
+        });
+
+        // let device_in_id = graph.connect(alsa_capture(AlsaCard {
+        //     pcm_name: "ps4stereo",
+        //     pcm_hint: "USB Audio Device",
+        //     hw_params: AlsaHwParams {
+        //         period_size: 768,
+        //         periods: 8,
+        //         ..Default::default()
+        //     },
+        //     // sw_params: AlsaSwParams {
+        //     //     avail_min: 96 * 2,
+        //     //     start_threshold: 96 * 2,
+        //     // },
+        //     ..Default::default()
+        // }), GraphNodeParams {
+        //     to: vec!(device_duck_in_id),
+        //     ..Default::default()
+        // });
+
+        let mic_in_duck = graph.connect(duck(6500), GraphNodeParams {
             to: vec!(transmitter_out_id),
+            ..Default::default()
+        });
+
+        // let mut silence_buffer = Vec::new();
+        // let mut out_buffer = Vec::new();
+        // let mic_in_duck = graph.connect(Box::new(Callback::new(Box::new(move |input, output| {
+        //     let avail = input.len();
+        //     input.read_into(avail, &mut silence_buffer);
+        //     for _ in out_buffer.len()..avail {
+        //         out_buffer.push(0);
+        //     }
+        //     for i in 0..avail {
+        //         silence_buffer[i] = 0;
+        //         out_buffer[i] = 0;
+        //     }
+        //     output.write_from(avail, &out_buffer);
+        //     // print!("{:?} ", output.buffer.as_ptr());
+        // }))), GraphNodeParams {
+        //     to: vec!(transmitter_out_id, device_out_id),
+        //     ..Default::default()
+        // });
+
+        // let streammic_volume_id = graph.connect(volume((2, 1)), GraphNodeParams {
+        //    to: vec!(mic_in_duck),
+        //    ..Default::default()
+        // });
+
+        let streammic_in_id = graph.connect(alsa_capture(AlsaCard {
+            // pcm_name: "streammic",
+            pcm_name: "front:CARD=On,DEV=0",
+            // pcm_hint: "default:CARD=On",
+            pcm_hint: "Turtle Beach Stream Mic (Mic On",
+            hw_params: AlsaHwParams {
+                period_size: 48,
+                periods: 64,
+                ..Default::default()
+            },
+            // sw_params: AlsaSwParams {
+            //     avail_min: 96 * 2,
+            //     start_threshold: 96 * 2,
+            // },
+            ..Default::default()
+        }), GraphNodeParams {
+            // to: vec!(streammic_volume_id),
+            to: vec!(mic_in_duck),
+            // to: vec!(transmitter_out_id),
             ..Default::default()
         });
 
         let transmitter_in_id = graph.connect(alsa_capture(AlsaCard {
             pcm_name: "transmitter_stereo",
-            pcm_hint: "default:CARD=Transmitter",
+            // pcm_hint: "default:CARD=Transmitter",
+            pcm_hint: "ASTRO Wireless Transmitter",
             hw_params: AlsaHwParams {
-                period_size: 48,
-                periods: 8,
+                period_size: 96,
+                periods: 32,
                 ..Default::default()
+            },
+            sw_params: AlsaSwParams {
+                avail_min: 96 * 2,
+                start_threshold: 96 * 2,
             },
             ..Default::default()
         }), GraphNodeParams {
+            to: vec!(mic_in_duck),
+            ..Default::default()
+        });
+
+        let sound_buffer = |start : usize, start_amount : usize, stop : usize, overrun : usize| {
+            let mut music_buffer = RingBuffer::new();
+            music_buffer.max_length = start * 2 * 2;
+            let mut start_reached = false;
+            let mut music_last = Instant::now();
+            let mut music_disabled = false;
+            let mut sample_error = 0;
+            let mut samples_out = 0;
+
+            Box::new(Callback::new(Box::new(move |input, output| {
+                output.active = false;
+                if music_disabled && Instant::now().duration_since(music_last).subsec_nanos() > 50000000 {
+                    music_disabled = false;
+                }
+                if !music_disabled {
+                    music_buffer.write_from_ring(input.len(), input);
+                }
+                if !music_disabled && !start_reached && music_buffer.len() > start * 2 {
+                    start_reached = true;
+                    music_last = Instant::now();
+                    output.write_from_ring(min(music_buffer.len(), start_amount * 2 as usize), &mut music_buffer);
+                }
+                if start_reached {
+                    output.active = true;
+                    let since_last = Instant::now();
+                    let since = since_last.duration_since(music_last);
+                    let samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
+                    sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
+                    // let samples = max(start_amount - output.len() / 2, 0);
+                    // print!("samples {:?} {:?} {:?}", music_buffer.len(), start_amount, output.len());
+                    if samples < overrun {
+                        output.write_from_ring(min(music_buffer.len(), samples * 2), &mut music_buffer);
+                        music_last = since_last;
+                    }
+                    else {
+                        print!("music overrun");
+                        output.clear();
+                        music_buffer.clear();
+                        music_disabled = true;
+                        music_last = Instant::now();
+                        sample_error = 0;
+                    }
+                    if music_buffer.len() < stop * 2 {
+                        print!("empty music buffer");
+                        start_reached = false;
+                        sample_error = 0;
+                    }
+                }
+                // print!("{:?} ", output.buffer.as_ptr());
+            })))
+        };
+
+        // let music_out_id = graph.connect(alsa_playback(AlsaCard {
+        //     pcm_name: "transmitter",
+        //     // pcm_hint: "default:CARD=Transmitter",
+        //     pcm_hint: "ASTRO Wireless Transmitter",
+        //     hw_params: AlsaHwParams {
+        //         period_size: 48,
+        //         periods: 32,
+        //         ..Default::default()
+        //     },
+        //     sw_params: AlsaSwParams {
+        //         avail_min: 48 * 2,
+        //         start_threshold: 48 * 2,
+        //     },
+        //     ..Default::default()
+        // }), GraphNodeParams { ..Default::default() });
+
+        let music_buffer_id = graph.connect(sound_buffer(24000, 192, 48, 24000), GraphNodeParams {
             to: vec!(transmitter_out_id),
             ..Default::default()
         });
 
+        let http_music_mutex = Arc::new(Mutex::new(RingBuffer::new()));
+        let http_music_mutex_clone = http_music_mutex.clone();
+
+        let http_music_in_id = graph.connect(Box::new(Capture::new(Box::new(move |output| {
+            if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
+                output.write_from_ring((*http_music).len(), &mut *http_music);
+            }
+        }))), GraphNodeParams {
+            to: vec!(music_buffer_id),
+            ..Default::default()
+        });
+
+        thread::spawn(|| {
+            let index = |_: &mut Request| {
+                Ok(Response::with((status::Ok, "Hello World!")))
+            };
+
+            let music = move |req: &mut Request| {
+                println!("music");
+                let mut buffer = Vec::<i16>::new();
+                for _ in 0..3840 {
+                    buffer.push(0);
+                }
+                let mut inner = RingBuffer::new();
+                loop {
+                    if let Ok(read) = unsafe {
+                        let buffer_ptr = buffer.as_mut_ptr();
+                        let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, 3840 * 2);
+                        req.body.read(slice)
+                    } {
+                        inner.write_from(read / 2, &buffer);
+                    }
+                    else {
+                        if let Ok(mut http_music) = (*http_music_mutex_clone).lock() {
+                            (*http_music).clear();
+                            // print!("read{:?}", read / 2 / 2);
+                        }
+                        println!("break music");
+                        break;
+                    }
+                    if inner.len() > 0 {
+                        if let Ok(mut http_music) = (*http_music_mutex_clone).try_lock() {
+                            if (*http_music).len() < 960 {
+                                (*http_music).write_from_ring(inner.len(), &mut inner);
+                            }
+                            else {
+                                inner.clear();
+                            }
+                            // print!("read{:?}", read / 2 / 2);
+                        }
+                    }
+                    sleep(Duration::from_millis(10));
+                    // yield_now();
+                }
+
+                Ok(Response::with((status::Ok, "Ok")))
+            };
+
+            Iron::new(router!(
+                index: get "/" => index,
+                music: post "/music/" => music,
+            )).http("0.0.0.0:80").unwrap();
+        });
+
         loop {
-            sleep(Duration::from_millis(1));
+            // sleep(Duration::from_millis(1));
+            yield_now();
             graph.update();
         }
-    }
-
-    {
-        // Open default playback device
-        let pcm = PCM::open(&*CString::new("front:CARD=Device,DEV=0").unwrap(), Direction::Capture, true).unwrap();
-        let pcm2 = PCM::open(&*CString::new("front:CARD=Device,DEV=0").unwrap(), Direction::Playback, true).unwrap();
-
-        // Set hardware parameters: 44100 Hz / Mono / 16 bit
-        let hwp = HwParams::any(&pcm).unwrap();
-        println!("{:?}", hwp);
-        hwp.set_channels(1).unwrap();
-        hwp.set_rate(48000, ValueOr::Nearest).unwrap();
-        hwp.set_format(Format::s16()).unwrap();
-        hwp.set_access(Access::RWInterleaved).unwrap();
-        // hwp.set_buffer_size_near(128).unwrap();
-        hwp.set_periods(8, ValueOr::Nearest).unwrap();
-        hwp.set_period_size_near(96, ValueOr::Nearest).unwrap();
-        // hwp.set_buffer_size_near(128).unwrap();
-        println!("{:?}", hwp);
-        pcm.hw_params(&hwp).unwrap();
-        let io = pcm.io_i16().unwrap();
-
-        let hwp2 = HwParams::any(&pcm2).unwrap();
-        hwp2.set_channels(2).unwrap();
-        hwp2.set_rate(48000, ValueOr::Nearest).unwrap();
-        hwp2.set_format(Format::s16()).unwrap();
-        hwp2.set_access(Access::RWInterleaved).unwrap();
-        hwp2.set_periods(16, ValueOr::Nearest).unwrap();
-        hwp2.set_period_size_near(96, ValueOr::Nearest).unwrap();
-        // hwp2.set_buffer_size_near(128).unwrap();
-        println!("{:?}", hwp2);
-        pcm2.hw_params(&hwp2).unwrap();
-        let io2 = pcm2.io_i16().unwrap();
-
-        let mut buf = [0i16; 24000];
-        println!("avail {:?}", pcm2.avail().unwrap());
-        pcm2.prepare().unwrap();
-        io2.writei(&buf[..(pcm2.avail().unwrap() as usize * 2)]).unwrap();
-        println!("avail {:?}", pcm2.avail().unwrap());
-        // pcm2.wait(None).unwrap();
-        if (pcm2.state() != State::Running) {
-            pcm2.start().unwrap();
-        }
-        pcm.prepare().unwrap();
-        pcm.start().unwrap();
-        loop {
-            let mut read = 0;
-            // println!("avail {:?}", pcm.avail());
-            while read < 1536 {
-                // sleep(Duration::from_millis(1));
-                if pcm.avail().unwrap() == 0 {
-                    pcm.wait(Some(1)).unwrap();
-                }
-                // pcm.avail().unwrap();
-                let start = read;
-                let mut end = read + pcm.avail().unwrap() as usize;
-                if end > (1536 - start) / 2 + start {
-                    end = (1536 - start) / 2 + start;
-                }
-                read += io.readi(&mut buf[start..end]).unwrap() * 2;
-                let double_end = end + (end - start);
-                for i in (start..double_end).rev().filter(|x| x % 2 == 0) {
-                    buf[i] = buf[start + (i - start) / 2];
-                    buf[i + 1] = buf[start + (i - start) / 2];
-                }
-                // println!("avail {:?}", pcm2.avail().unwrap());
-                if pcm2.avail().unwrap() == 0 {
-                    pcm2.wait(Some(1)).unwrap();
-                }
-                io2.writei(&buf[start..double_end]).unwrap();
-                // println!("written {:?}", io2.writei(&buf[start..end]).unwrap());
-                // if (read >  && pcm2.state() != State::Running) {
-                //     pcm2.start().unwrap();
-                // }
-                // println!("read {:?}", end - start);
-            }
-            // assert_eq!(io.readi(&mut buf[..]).unwrap(), 22050);
-            // let mut sum = 0.0;
-            // let mut max = 0i32;
-            // let mut min = 0i32;
-            // for (i, a) in buf.iter().enumerate() {
-            //     sum += *a as f32;
-            //     if *a as i32 > max {
-            //         max = *a as i32;
-            //     }
-            //     if (*a as i32) < min {
-            //         min = *a as i32;
-            //     }
-            // }
-            // println!("avg {:?} max {:?} min {:?}", sum / 1536.0, max, min);
-            // io2.writei(&buf[..]).unwrap();
-            // if (pcm2.state() != State::Running) {
-            //     pcm2.start().unwrap();
-            // }
-        }
-    }
-
-    // Loop forever
-    loop {
-        // Toggle each LED
-        // tessel.led[2].on().unwrap();
-        // tessel.led[3].toggle().unwrap();
-        // Re-execute the loop after sleeping for 100ms
-        // sleep(Duration::from_millis(1));
-        // tessel.led[2].off().unwrap();
-        // sleep(Duration::from_millis(32));
     }
 }

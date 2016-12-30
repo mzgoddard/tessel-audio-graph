@@ -7,4 +7,6 @@ authors = ["Your Name <you@example.com>"]
 tessel = "0.2.0"
 alsa = "0.1.3"
 libusb = "0.3.0"
+iron = "0.4.0"
+router = "*"
 graph_utils = { path = "graph_utils" }
