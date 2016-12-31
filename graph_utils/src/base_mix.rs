@@ -77,7 +77,7 @@ impl BaseMix {
 
     pub fn mix_inputs_ring(&mut self, inputs: &mut [RingBuffer], ring: &mut RingBuffer) {
         let avail = self.mix_inputs(inputs);
-        ring.active = inputs.iter().any(|x| x.active);
+        ring.active = inputs.len() > 0 && inputs.iter().any(|x| x.active);
         ring.write_from(avail, &self.accum);
     }
 }
@@ -85,6 +85,10 @@ impl BaseMix {
 impl Node for BaseMix {
     fn update(&mut self, inputs: &mut [RingBuffer], outputs: &mut [RingBuffer]) {
         copy_out(self.mix_inputs(inputs), &mut self.accum, outputs);
+        let active = inputs.len() > 0 && inputs.iter().any(|x| x.active);
+        for output in outputs.iter_mut() {
+            output.active = active
+        }
     }
 }
 
