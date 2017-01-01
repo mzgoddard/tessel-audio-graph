@@ -29,7 +29,11 @@ use std::thread;
 use std::sync::*;
 use std::cell::*;
 use std::slice;
-use std::io::Read;
+use std::io::{Read, ErrorKind};
+
+use std::net::{TcpListener, TcpStream};
+
+use std::rc::Rc;
 
 use std::ffi::CString;
 use alsa::device_name::HintIter;
@@ -42,6 +46,12 @@ use graph_utils::*;
 
 use iron::prelude::*;
 use iron::status;
+use iron::headers::{Headers, ContentType};
+use iron::mime::{Mime, TopLevel, SubLevel};
+use iron::request;
+use iron::{Timeouts, Protocol};
+
+// use hyper::http::h1::HttpReader;
 
 use router::*;
 
@@ -229,7 +239,7 @@ fn main() {
     {
         let mut graph = Graph::new();
 
-        let hint_mutex = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hint_mutex = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
         let hint_mutex_clone = hint_mutex.clone();
 
         thread::spawn(move || {
@@ -274,8 +284,8 @@ fn main() {
                     }
                     for card_result in card::Iter::new() {
                         if let Ok(card) = card_result {
-                            if let Ok(ref name) = card.get_longname() {
-                                (*hints).push(name.clone());
+                            if let (Ok(ref longname), index) = (card.get_longname(), card.get_index()) {
+                                (*hints).push((longname.clone(), format!("hw:{},0", index)));
                             }
                             else {
                                 break;
@@ -340,13 +350,13 @@ fn main() {
                     }
 
                     let hint = if let Ok(mut hints) = hint_mutex_playback.try_lock() {
-                        if let Some(hint) = (*hints).iter().find(|hint| {
-                            **hint == card.pcm_hint
+                        if let Some((_, name)) = (*hints).iter().find(|hint| {
+                            (*hint).0 == card.pcm_hint
                         }).map(|x| x.clone()) {
                             // for _ in 0..hints.len() {
                             //     (*hints).pop().unwrap();
                             // }
-                            Some(hint)
+                            Some(name)
                         }
                         else {
                             None
@@ -360,7 +370,7 @@ fn main() {
                         if let Ok(mut activating) = activating_device_clone.lock() {
                             if *activating == -1 {
                                 *activating = activating_id;
-                                print!("activating {:?} playback", card.pcm_name);
+                                println!("activating {:?} playback", card.pcm_name);
                                 return;
                             }
                             else if *activating != activating_id {
@@ -372,7 +382,7 @@ fn main() {
                         }
                     }
 
-                    if hint.is_some() {
+                    if let Some(_) = hint {
                         if let Ok(mut pcm) = PCM::open(&*CString::new(card.pcm_name).unwrap(), Direction::Playback, true) {
                             if let Err(_) = card.hw_params.set_params(&pcm) {
                                 println!("error setting hwparams {:?} playback", card.pcm_name);
@@ -444,6 +454,7 @@ fn main() {
                                 if let Ok(_) = pcm.pause(false) {}
                                 paused = false;
                                 println!("resumed {:?} playback", card.pcm_name);
+                                return;
                             }
                         }
                     }
@@ -485,7 +496,7 @@ fn main() {
                             }
                             else {
                                 println!("error creating io {:?} playback", card.pcm_name);
-                                unset = true;
+                                // unset = true;
                             }
                         }
                         else {
@@ -495,7 +506,7 @@ fn main() {
                     }
                     else {
                         println!("error checking avail {:?} playback", card.pcm_name);
-                        unset = true;
+                        // unset = true;
                     }
                 }
                 if unset {
@@ -537,13 +548,13 @@ fn main() {
                         }
                     }
                     let hint = if let Ok(mut hints) = hint_mutex_capture.try_lock() {
-                        if let Some(hint) = (*hints).iter().find(|hint| {
-                            **hint == card.pcm_hint
+                        if let Some((_, name)) = (*hints).iter().find(|hint| {
+                            (*hint).0 == card.pcm_hint
                         }).map(|x| x.clone()) {
                             // for _ in 0..hints.len() {
                             //     (*hints).pop().unwrap();
                             // }
-                            Some(hint)
+                            Some(name)
                         }
                         else {
                             None
@@ -569,7 +580,7 @@ fn main() {
                     }
                     // println!("search {:?} {:?}", card.pcm_name, Instant::now().duration_since(now));
 
-                    let mut maybe_pcm = if hint.is_some() {
+                    let mut maybe_pcm = if let Some(_) = hint {
                         if let Ok(pcm) = PCM::open(&*CString::new(card.pcm_name).unwrap(), Direction::Capture, true) {
                             if let Err(_) = card.hw_params.set_params(&pcm) {
                                 println!("error setting hwparams {:?} capture", card.pcm_name);
@@ -656,6 +667,7 @@ fn main() {
                                         if let Ok(_) = pcm.pause(false) {}
                                         paused = false;
                                         println!("resumed {:?} capture", pcm_name);
+                                        return false;
                                     }
                                     if status.get_state() == State::Prepared {
                                         if let Err(_) = pcm.start() {
@@ -684,7 +696,7 @@ fn main() {
                                     Ok(avail) => Some(avail),
                                     Err(_) => {
                                         println!("error checking available {:?} capture", pcm_name);
-                                        unset = true;
+                                        // unset = true;
                                         None
                                     }
                                 }
@@ -698,7 +710,7 @@ fn main() {
                                         Ok(io) => Some(io),
                                         Err(_) => {
                                             println!("error creating io {:?} capture", pcm_name);
-                                            unset = true;
+                                            // unset = true;
                                             None
                                         }
                                     }
@@ -722,7 +734,7 @@ fn main() {
                                         Ok(read) => Some(read),
                                         Err(_) => {
                                             println!("error reading {:?} capture", pcm_name);
-                                            unset = true;
+                                            // unset = true;
                                             None
                                         }
                                     }
@@ -758,31 +770,55 @@ fn main() {
             })))
         };
 
-        let duck = |peak| {
+        let duck = |peak, gate: Rc<Cell<bool>>| {
             let mut buffer = Vec::new();
             let mut active = false;
             let mut last_peak = Instant::now();
+            let mut samples = 0;
             Box::new(Callback::new(Box::new(move |input, output| {
                 let avail = input.len();
                 let amount = input.read_into(avail, &mut buffer);
+                samples += amount / 2;
                 for i in 0..amount {
                     if buffer[i] > peak {
                         active = true;
-                        last_peak = Instant::now();
+                        gate.set(true);
+                        // last_peak = Instant::now();
+                        samples = 0;
                     }
                 }
                 if active {
                     output.write_from(amount, &buffer);
-                    if Instant::now().duration_since(last_peak).as_secs() > 1 {
+                    if samples > 48000 {
                         active = false;
+                        gate.set(false);
                     }
+                    // if Instant::now().duration_since(last_peak).as_secs() > 1 {
+                    //     active = false;
+                    // }
                 }
                 else {
-                    for i in 0..amount {
-                        buffer[i] = 0;
-                    }
-                    output.write_from(amount, &buffer);
+                    output.active = false;
+                    // for i in 0..amount {
+                    //     buffer[i] = 0;
+                    // }
+                    // output.write_from(amount, &buffer);
                 }
+            })))
+        };
+
+        let ducked = |gate: Vec<Rc<Cell<bool>>>, volume: (i32, i32)| {
+            let mut buffer = Vec::new();
+            Box::new(Callback::new(Box::new(move |input, output| {
+                if !input.active {return;}
+                let avail = input.len();
+                input.read_into(avail, &mut buffer);
+                if gate.iter().any(|gate| gate.get()) {
+                    for i in 0..avail {
+                        buffer[i] = (buffer[i] as i32 * volume.0 / volume.1) as i16;
+                    }
+                }
+                output.write_from(avail, &buffer);
             })))
         };
 
@@ -801,69 +837,85 @@ fn main() {
         let lean = |max_amount| {
             let mut buffer = Vec::new();
             Box::new(Callback::new(Box::new(move |input, output| {
-                let mut avail = input.len();
+                let mut avail = min(input.len(), max_amount);
                 input.read_into(avail, &mut buffer);
-                avail = min(avail, max_amount);
+                input.clear();
                 output.write_from(avail, &buffer);
             })))
         };
 
-        let sound_buffer = |start : usize, start_amount : usize, stop : usize, overrun : usize| {
-            let mut music_buffer = RingBuffer::new();
-            music_buffer.max_length = start * 2 * 2;
-            let mut start_reached = false;
-            let mut music_last = Instant::now();
-            let mut music_disabled = false;
-            let mut sample_error = 0;
-            let mut samples_out = 0;
-
-            Box::new(Callback::new(Box::new(move |input, output| {
-                output.active = false;
-                if music_disabled && Instant::now().duration_since(music_last).subsec_nanos() > 50000000 {
-                    music_disabled = false;
-                }
-                if !music_disabled {
-                    music_buffer.write_from_ring(input.len(), input);
-                }
-                if !music_disabled && !start_reached && music_buffer.len() > start * 2 {
-                    start_reached = true;
-                    music_last = Instant::now();
-                    output.write_from_ring(min(music_buffer.len(), start_amount * 2 as usize), &mut music_buffer);
-                }
-                if start_reached {
-                    output.active = true;
-                    let since_last = Instant::now();
-                    let since = since_last.duration_since(music_last);
-                    let samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
-                    sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
-                    // let samples = max(start_amount - output.len() / 2, 0);
-                    // print!("samples {:?} {:?} {:?}", music_buffer.len(), start_amount, output.len());
-                    if samples < overrun {
-                        output.write_from_ring(min(music_buffer.len(), samples * 2), &mut music_buffer);
-                        music_last = since_last;
-                    }
-                    else {
-                        // print!("music overrun");
-                        output.clear();
-                        music_buffer.clear();
-                        music_disabled = true;
-                        music_last = Instant::now();
-                        sample_error = 0;
-                    }
-                    if music_buffer.len() <= stop * 2 {
-                        // print!("empty music buffer");
-                        start_reached = false;
-                        sample_error = 0;
-                    }
-                }
-                // print!("{:?} ", output.buffer.as_ptr());
-            })))
-        };
+        // let sound_buffer = |debug_name, start : usize, start_amount : usize, stop : usize, overrun : usize| {
+        //     let mut music_buffer = RingBuffer::new();
+        //     music_buffer.max_length = start * 2 * 2;
+        //     let mut start_reached = false;
+        //     let mut music_last = Instant::now();
+        //     let mut music_disabled = false;
+        //     let mut sample_error = 0;
+        //     let mut samples_out = 0;
+        //
+        //     Box::new(Callback::new(Box::new(move |input, output| {
+        //         output.active = false;
+        //         if music_disabled && Instant::now().duration_since(music_last).subsec_nanos() > 50000000 {
+        //             music_disabled = false;
+        //         }
+        //         if music_disabled {
+        //             input.clear();
+        //         }
+        //         if !music_disabled && input.active {
+        //             music_buffer.write_from_ring(input.len(), input);
+        //         }
+        //         if !music_disabled && input.active && !start_reached && music_buffer.len() > start * 2 {
+        //             // println!("{} buffer start", debug_name);
+        //             start_reached = true;
+        //             music_last = Instant::now();
+        //             output.write_from_ring(min(music_buffer.len(), start_amount * 2 as usize), &mut music_buffer);
+        //         }
+        //         if start_reached && input.active {
+        //             output.active = true;
+        //             let since_last = Instant::now();
+        //             let since = since_last.duration_since(music_last);
+        //             let samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
+        //             sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
+        //             // let samples = max(start_amount - output.len() / 2, 0);
+        //             // print!("samples {:?} {:?} {:?}", music_buffer.len(), start_amount, output.len());
+        //             if samples < overrun {
+        //                 output.write_from_ring(min(music_buffer.len(), samples * 2), &mut music_buffer);
+        //                 music_last = since_last;
+        //             }
+        //             else {
+        //                 output.active = false;
+        //                 // println!("{} overrun", debug_name);
+        //                 output.clear();
+        //                 music_buffer.clear();
+        //                 music_disabled = true;
+        //                 music_last = Instant::now();
+        //                 sample_error = 0;
+        //             }
+        //             if music_buffer.len() <= stop * 2 {
+        //                 output.active = false;
+        //                 // println!("empty {} buffer", debug_name);
+        //                 start_reached = false;
+        //                 sample_error = 0;
+        //             }
+        //         }
+        //         else if start_reached {
+        //             sample_error = 0;
+        //             music_last = Instant::now();
+        //         }
+        //         //     let since_last = Instant::now();
+        //         //     let since = since_last.duration_since(music_last);
+        //         //     let samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
+        //         //     sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
+        //         //     music_last = since_last;
+        //         // }
+        //         // print!("{:?} ", output.buffer.as_ptr());
+        //     })))
+        // };
 
         let toslink_out_id = graph.connect(alsa_playback(AlsaCard {
             pcm_name: "iec958:CARD=Device_1,DEV=0",
             // pcm_hint: "USB Sound Device",
-            pcm_hint: "USB Sound Device at usb-101c0000.ehci-1.2, full speed",
+            pcm_hint: "USB Sound Device at usb-101c0000.ehci-1.2.1, full speed",
             // pcm_name: "toslink16",
             // // pcm_hint: "default:CARD=USBStreamer",
             // pcm_hint: "USBStreamer",
@@ -878,15 +930,15 @@ fn main() {
             },
         }), GraphNodeParams { ..Default::default() });
 
-        let toslink_buffer_id = graph.connect(sound_buffer(1536, 384, 0, 1536), GraphNodeParams {
-            to: vec!(toslink_out_id),
-            .. Default::default()
-        });
+        // let toslink_buffer_id = graph.connect(sound_buffer("toslink", 1536, 768, 0, 1536), GraphNodeParams {
+        //     to: vec!(toslink_out_id),
+        //     .. Default::default()
+        // });
 
         let toslink_in_id = graph.connect(alsa_capture(AlsaCard {
             pcm_name: "iec958:CARD=Device_1,DEV=0",
             // pcm_hint: "USB Sound Device",
-            pcm_hint: "USB Sound Device at usb-101c0000.ehci-1.2, full speed",
+            pcm_hint: "USB Sound Device at usb-101c0000.ehci-1.2.1, full speed",
             // pcm_name: "toslink16",
             // // pcm_hint: "default:CARD=USBStreamer",
             // pcm_hint: "USBStreamer",
@@ -901,7 +953,8 @@ fn main() {
             },
             ..Default::default()
         }), GraphNodeParams {
-            to: vec!(toslink_buffer_id),
+            to: vec!(toslink_out_id),
+            // to: vec!(toslink_buffer_id),
             ..Default::default()
         });
 
@@ -944,34 +997,37 @@ fn main() {
             // pcm_hint: "ASTRO Wireless Transmitter",
             pcm_hint: "Astro Gaming Inc. ASTRO Wireless Transmitter at usb-101c0000.ehci-1.1.4.1, full",
             hw_params: AlsaHwParams {
-                period_size: 96,
+                period_size: 48,
                 periods: 32,
                 ..Default::default()
             },
             sw_params: AlsaSwParams {
-                avail_min: 96 * 4,
-                start_threshold: 96 * 4,
+                avail_min: 96 * 8,
+                start_threshold: 96 * 8,
             },
             ..Default::default()
         }), GraphNodeParams { ..Default::default() });
 
-        let transmitter_lean_id = graph.connect(lean(1536), GraphNodeParams {
+        let transmitter_lean_id = graph.connect(lean(768), GraphNodeParams {
             to: vec!(transmitter_out_id),
             ..Default::default()
         });
 
         let transmitter_mix_id = graph.connect(Box::new(BaseMix::new()), GraphNodeParams {
             to: vec!(transmitter_lean_id),
-            ..Default::default()
-        });
-
-        let other_duck_id = graph.connect(duck(2000), GraphNodeParams {
             // to: vec!(transmitter_out_id),
-            to: vec!(transmitter_mix_id),
             ..Default::default()
         });
 
-        let device_duck_in_id = graph.connect(duck(0), GraphNodeParams {
+        // let other_duck_id = graph.connect(duck(2000), GraphNodeParams {
+        //     // to: vec!(transmitter_out_id),
+        //     to: vec!(transmitter_mix_id),
+        //     ..Default::default()
+        // });
+
+        let device_duck_gate = Rc::new(Cell::new(false));
+
+        let device_duck_in_id = graph.connect(duck(2000, device_duck_gate.clone()), GraphNodeParams {
             to: vec!(transmitter_mix_id),
             ..Default::default()
         });
@@ -981,10 +1037,10 @@ fn main() {
         //     ..Default::default()
         // });
 
-        let device_buffer_in_id = graph.connect(sound_buffer(6144, 384, 0, 6144), GraphNodeParams {
-            to: vec!(device_duck_in_id),
-            ..Default::default()
-        });
+        // let device_buffer_in_id = graph.connect(sound_buffer("ps4", 6144, 768, 0, 6144), GraphNodeParams {
+        //     to: vec!(device_duck_in_id),
+        //     ..Default::default()
+        // });
 
         let mut silence_buffer = Vec::new();
         let mut out_buffer = Vec::new();
@@ -1031,8 +1087,8 @@ fn main() {
             output.write_from(denom, &out_buffer);
             // print!("{:?} ", output.buffer.as_ptr());
         }))), GraphNodeParams {
-            // to: vec!(device_duck_in_id),
-            to: vec!(device_buffer_in_id),
+            to: vec!(device_duck_in_id),
+            // to: vec!(device_buffer_in_id),
             ..Default::default()
         });
 
@@ -1078,7 +1134,9 @@ fn main() {
         //     ..Default::default()
         // });
 
-        let mic_in_duck = graph.connect(duck(6500), GraphNodeParams {
+        let mic_duck_gate = Rc::new(Cell::new(false));
+
+        let mic_in_duck = graph.connect(duck(6500, mic_duck_gate.clone()), GraphNodeParams {
             to: vec!(transmitter_mix_id, device_out_id),
             ..Default::default()
         });
@@ -1161,33 +1219,37 @@ fn main() {
             let mut playing = false;
             let mut last = Instant::now();
             let mut volume = 0;
-            let mut timeout = 0.2;
+            let mut timeout = 9600;
+            let mut samples = 0;
             Box::new(Callback::new(Box::new(move |input, output| {
                 let avail = input.len();
                 input.read_into(avail, &mut buffer);
                 if avail > 0 {
-                    let now = Instant::now();
-                    let since = now.duration_since(last);
+                    // let now = Instant::now();
+                    // let since = now.duration_since(last);
+                    samples = 0;
                     if !playing {
                         playing = true;
-                        volume = -48000;
+                        volume = 0;
                     }
 
                     for i in 0..avail {
                         buffer[i] = (buffer[i] as i32 * max(volume, 0) / 48000) as i16;
                         if i % 4 == 0 {
-                            volume = min(volume + 1, 48000);
+                            volume = min(volume + 8, 48000);
                         }
                     }
 
-                    last = now;
+                    // last = now;
                 }
                 else if playing {
-                    let now = Instant::now();
-                    let since = now.duration_since(last);
-                    if since.as_secs() > 0 || since.subsec_nanos() > (timeout * 1e9) as u32 {
+                    // let now = Instant::now();
+                    // let since = now.duration_since(last);
+                    // if since.as_secs() > 0 || since.subsec_nanos() > (timeout * 1e9) as u32 {
+                    samples += 48;
+                    if samples > timeout {
                         playing = false;
-                        volume = -48000;
+                        volume = 0;
                     }
                 }
                 if !playing {
@@ -1215,70 +1277,395 @@ fn main() {
         //     ..Default::default()
         // }), GraphNodeParams { ..Default::default() });
 
-        let music_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
+        let content_duck_id = graph.connect(ducked(vec!(mic_duck_gate, device_duck_gate), (2, 5)), GraphNodeParams {
             to: vec!(transmitter_mix_id),
             ..Default::default()
         });
 
-        let music_buffer_id = graph.connect(sound_buffer(24000, 3072, 384, 3072), GraphNodeParams {
-            to: vec!(music_fade_in_id),
-            // to: vec!(transmitter_out_id),
+        let music_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
+            to: vec!(content_duck_id),
+            // to: vec!(transmitter_mix_id),
             ..Default::default()
         });
+
+        // let music_buffer_id = graph.connect(sound_buffer("music", 1536, 768, 0, 768), GraphNodeParams {
+        //     to: vec!(music_fade_in_id),
+        //     // to: vec!(transmitter_out_id),
+        //     ..Default::default()
+        // });
 
         let http_music_mutex = Arc::new(Mutex::new(RingBuffer::new()));
         let http_music_mutex_clone = http_music_mutex.clone();
+        let tcp_music_mutex_clone = http_music_mutex.clone();
 
+        let activating_device_clone = activating_device.clone();
+        let activating_id = next_activating_id.get();
+        next_activating_id.set(activating_id + 1);
+        let mut last_received = Instant::now();
+        let mut activation_start = Instant::now();
+        let mut state = 0;
+        let mut paused = false;
+        let mut samples = 0;
         let http_music_in_id = graph.connect(Box::new(Capture::new(Box::new(move |output| {
             if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
-                output.write_from_ring((*http_music).len(), &mut *http_music);
+                // let now = Instant::now();
+                output.active = false;
+                if state == 0 && (*http_music).len() > 0 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == -1 {
+                            // activation_start = now;
+                            *activating = activating_id;
+                            println!("activating http music");
+                            samples = 0;
+                            state = 1;
+                        }
+                    }
+                    // last_received = now;
+                    (*http_music).clear();
+                }
+                // else if state == 1 && (*http_music).len() > 0 && now.duration_since(activation_start).as_secs() > 0 {
+                else if state == 1 && (*http_music).len() > 0 && samples > 48000 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == activating_id {
+                            *activating = -1;
+                            println!("activated http music");
+                            // last_received = now;
+                            (*http_music).clear();
+                            samples = 0;
+                            state = 2;
+                        }
+                        else {
+                            // last_received = now;
+                            (*http_music).clear();
+                            state = 0;
+                        }
+                    }
+                }
+                // else if state == 1 && (*http_music).len() == 0 && now.duration_since(activation_start).as_secs() > 1 {
+                else if state == 1 && (*http_music).len() == 0 && samples > 96000 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == activating_id {
+                            *activating = -1;
+                            println!("didn't activate http music");
+                            state = 0;
+                        }
+                    }
+                }
+                else if state == 1 && (*http_music).len() > 0 {
+                    samples += (*http_music).len();
+                    // last_received = now;
+                    (*http_music).clear();
+                }
+                else if state == 2 && (*http_music).len() > 0 {
+                    // last_received = now;
+                    // samples += (*http_music).len();
+                    samples = 0;
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating != -1 {
+                            if !paused {
+                                println!("paused http music");
+                            }
+                            paused = true;
+                        }
+                        else {
+                            if paused {
+                                println!("resumed http music");
+                            }
+                            paused = false;
+                        }
+                    }
+                    if !paused {
+                        output.active = true;
+                        output.write_from_ring((*http_music).len(), &mut *http_music);
+                    }
+                    else {
+                        (*http_music).clear();
+                    }
+                }
+                // else if state == 2 && (*http_music).len() == 0 && now.duration_since(last_received).as_secs() < 1 {
+                else if state == 2 && (*http_music).len() == 0 && samples < 48000 {
+                    samples += 48;
+                    output.active = !paused;
+                }
+                // else if state == 2 && (*http_music).len() == 0 && now.duration_since(last_received).as_secs() > 0 {
+                else if state == 2 && (*http_music).len() == 0 && samples >= 48000 {
+                    state = 0;
+                }
+                // let was_active = output.active;
+                // output.active = (*http_music).len() > 0 || now.duration_since(last_received).subsec_nanos() < 25000000;
+                // if !was_active && output.active {
+                //     activation_start = now;
+                //     if let Ok(mut activating) = activating_device_clone.lock() {
+                //         if *activating == -1 {
+                //             *activating = activating_id;
+                //             println!("activating http music");
+                //         }
+                //         else if *activating != activating_id {
+                //             output.active = false;
+                //         }
+                //     }
+                //     else {
+                //         return;
+                //     }
+                // }
+                // else if output.active && now.duration_since(activation_start).as_secs() > 0 {
+                //     if let Ok(mut activating) = activating_device_clone.lock() {
+                //         if *activating == activating_id {
+                //             *activating = -1;
+                //             println!("activated http music");
+                //         }
+                //         else if *activating != -1 {
+                //             return;
+                //         }
+                //         else {
+                //             if (*http_music).len() > 0 {
+                //                 last_received = now;
+                //             }
+                //             if output.active {
+                //                 output.write_from_ring((*http_music).len(), &mut *http_music);
+                //             }
+                //             else {
+                //                 (*http_music).clear();
+                //             }
+                //         }
+                //     }
+                //     else {
+                //         return;
+                //     }
+                // }
+                // else if !output.active {
+                //     if let Ok(mut activating) = activating_device_clone.lock() {
+                //         if *activating == activating_id {
+                //             *activating = -1;
+                //             println!("didn't activate http music");
+                //         }
+                //     }
+                // }
             }
         }))), GraphNodeParams {
-            to: vec!(music_buffer_id),
+            // to: vec!(music_buffer_id),
+            to: vec!(music_fade_in_id),
+            // to: vec!(transmitter_mix_id),
             ..Default::default()
         });
 
-        thread::spawn(|| {
-            let index = |_: &mut Request| {
-                Ok(Response::with((status::Ok, "Hello World!")))
-            };
+        let chrome_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
+            to: vec!(content_duck_id),
+            // to: vec!(transmitter_mix_id),
+            ..Default::default()
+        });
 
-            let music = move |req: &mut Request| {
-                println!("music");
+        // let chrome_buffer_id = graph.connect(sound_buffer("chrome", 1536, 768, 0, 768), GraphNodeParams {
+        //     to: vec!(chrome_fade_in_id),
+        //     // to: vec!(transmitter_out_id),
+        //     ..Default::default()
+        // });
+
+        let gated = |gate_cell: Arc<Mutex<bool>>| {
+            Box::new(Callback::new(Box::new(move |input, output| {
+                if !input.active {return;}
+                if let Ok(gated) = gate_cell.lock() {
+                // if !gate_cell.get() {
+                    if !*gated {
+                        output.active = false;
+                        input.clear();
+                    }
+                    else {
+                        output.write_from_ring(input.len(), input);
+                    }
+                }
+            })))
+        };
+
+        let chrome_device_gate = Arc::new(Mutex::new(false));
+        let chrome_gated_id = graph.connect(gated(chrome_device_gate.clone()), GraphNodeParams {
+            to: vec!(device_out_id),
+            ..Default::default()
+        });
+
+        let http_chrome_mutex = Arc::new(Mutex::new(RingBuffer::new()));
+        let http_chrome_mutex_clone = http_chrome_mutex.clone();
+        let tcp_chrome_mutex_clone = http_chrome_mutex.clone();
+
+        let activating_device_clone = activating_device.clone();
+        let activating_id = next_activating_id.get();
+        next_activating_id.set(activating_id + 1);
+        let mut last_received = Instant::now();
+        let mut activation_start = Instant::now();
+        let mut state = 0;
+        let mut paused = false;
+        let mut samples = 0;
+        let http_chrome_in_id = graph.connect(Box::new(Capture::new(Box::new(move |output| {
+            if let Ok(mut http_chrome) = (*http_chrome_mutex).try_lock() {
+                // let now = Instant::now();
+                output.active = false;
+                if state == 0 && (*http_chrome).len() > 0 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == -1 {
+                            // activation_start = now;
+                            *activating = activating_id;
+                            println!("activating http chrome");
+                            samples = 0;
+                            state = 1;
+                        }
+                    }
+                    // last_received = now;
+                    (*http_chrome).clear();
+                }
+                // else if state == 1 && (*http_chrome).len() > 0 && now.duration_since(activation_start).as_secs() > 0 {
+                else if state == 1 && (*http_chrome).len() > 0 && samples > 48000 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == activating_id {
+                            *activating = -1;
+                            println!("activated http chrome");
+                            // last_received = now;
+                            (*http_chrome).clear();
+                            state = 2;
+                        }
+                        else {
+                            // last_received = now;
+                            (*http_chrome).clear();
+                            state = 0;
+                        }
+                    }
+                }
+                // else if state == 1 && (*http_chrome).len() == 0 && now.duration_since(activation_start).as_secs() > 1 {
+                else if state == 1 && (*http_chrome).len() == 0 && samples > 96000 {
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating == activating_id {
+                            *activating = -1;
+                            println!("didn't activate http chrome");
+                            state = 0;
+                        }
+                    }
+                }
+                else if state == 1 && (*http_chrome).len() > 0 {
+                    // last_received = now;
+                    samples += (*http_chrome).len();
+                    (*http_chrome).clear();
+                }
+                else if state == 2 && (*http_chrome).len() > 0 {
+                    // last_received = now;
+                    samples = 0;
+                    if let Ok(mut activating) = activating_device_clone.lock() {
+                        if *activating != -1 {
+                            if !paused {
+                                println!("paused http chrome");
+                            }
+                            paused = true;
+                        }
+                        else {
+                            if paused {
+                                println!("resumed http chrome");
+                            }
+                            paused = false;
+                        }
+                    }
+                    if !paused {
+                        output.active = true;
+                        output.write_from_ring((*http_chrome).len(), &mut *http_chrome);
+                    }
+                    else {
+                        (*http_chrome).clear();
+                    }
+                }
+                // else if state == 2 && (*http_chrome).len() == 0 && now.duration_since(last_received).as_secs() < 1 {
+                else if state == 2 && (*http_chrome).len() == 0 && samples < 48000 {
+                    samples += 48;
+                    output.active = !paused;
+                }
+                // else if state == 2 && (*http_chrome).len() == 0 && now.duration_since(last_received).as_secs() > 0 {
+                else if state == 2 && (*http_chrome).len() == 0 && samples >= 48000 {
+                    state = 0;
+                }
+            }
+            // if let Ok(mut http_chrome) = (*http_chrome_mutex).try_lock() {
+            //     let now = Instant::now();
+            //     output.active = now.duration_since(last_received).subsec_nanos() < 25000000;
+            //     if (*http_chrome).len() > 0 {
+            //         last_received = now;
+            //     }
+            //     output.write_from_ring((*http_chrome).len(), &mut *http_chrome);
+            // }
+        }))), GraphNodeParams {
+            // to: vec!(music_buffer_id),
+            // to: vec!(chrome_buffer_id),
+            to: vec!(chrome_fade_in_id, chrome_gated_id),
+            // to: vec!(transmitter_mix_id, device_out_id),
+            ..Default::default()
+        });
+
+        let audio_stream_factory = move |name, stream_mutex: Arc<Mutex<RingBuffer>>| {
+            move |stream: &mut Read| {
+                // if let request::Body(reader) = req.body {
+                //     match reader {
+                //         HttpReader::EofReader(reader) => {
+                //             reader.set_read_timeout(Duration::from_millis(1));
+                //         },
+                //         _ => {},
+                //     }
+                // }
+
+                println!("{}", name);
                 let mut buffer = Vec::<i16>::new();
-                for _ in 0..3840 {
+                for _ in 0..3072 {
                     buffer.push(0);
                 }
                 let mut last_read = Instant::now();
                 let mut inner = RingBuffer::new();
+
+                // sleep(Duration::from_millis(20));
+                let mut music_last = Instant::now();
+                let mut sample_error = 0;
+                let mut samples_missed = 0;
+
                 loop {
-                    if let Ok(read) = unsafe {
-                        let buffer_ptr = buffer.as_mut_ptr();
-                        let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, 3840 * 2);
-                        req.body.read(slice)
-                    } {
-                        inner.write_from(read / 2, &buffer);
+                    // let start = Instant::now();
+                    // let since_last = Instant::now();
+                    // let since = since_last.duration_since(music_last);
+                    // let mut samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
+                    // samples = min(samples, 192);
+                    let samples = 96;
+                    // sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
+                    // music_last = since_last;
+                    // print!("{} {} ", name, samples);
+                    if samples > 0 {
+                        if let Ok(read) = unsafe {
+                            let buffer_ptr = buffer.as_mut_ptr();
+                            let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, samples * 2 * 2);
+                            stream.read(slice)
+                        } {
+                            // sample_error += (samples - read / 2 / 2) * 1000000 / 48;
+                            // print!("{} {} ", name, read);
+                            inner.write_from(read / 2, &buffer);
+                        }
+                        else {
+                            if let Ok(mut http_music) = (*stream_mutex).lock() {
+                                (*http_music).clear();
+                                // print!("read{:?}", read / 2 / 2);
+                            }
+                            println!("break {:?}", name);
+                            break;
+                        }
+                    }
+                    // if Instant::now().duration_since(last_read).as_secs() > 1 {
+                    if samples_missed > 48000 {
+                        samples_missed = 0;
+                        if let Ok(mut http_music) = (*stream_mutex).lock() {
+                            (*http_music).clear();
+                            // print!("read{:?}", read / 2 / 2);
+                        }
+                        println!("break {:?}", name);
+                        break;
                     }
                     else {
-                        if let Ok(mut http_music) = (*http_music_mutex_clone).lock() {
-                            (*http_music).clear();
-                            // print!("read{:?}", read / 2 / 2);
-                        }
-                        println!("break music");
-                        break;
-                    }
-                    if Instant::now().duration_since(last_read).as_secs() > 1 {
-                        if let Ok(mut http_music) = (*http_music_mutex_clone).lock() {
-                            (*http_music).clear();
-                            // print!("read{:?}", read / 2 / 2);
-                        }
-                        println!("break music");
-                        break;
+                        samples_missed += 48;
                     }
                     if inner.len() > 0 {
-                        last_read = Instant::now();
-                        if let Ok(mut http_music) = (*http_music_mutex_clone).try_lock() {
-                            if (*http_music).len() < 960 {
+                        samples_missed = 0;
+                        // last_read = Instant::now();
+                        if let Ok(mut http_music) = (*stream_mutex).try_lock() {
+                            if (*http_music).len() < 6144 {
                                 (*http_music).write_from_ring(inner.len(), &mut inner);
                             }
                             else {
@@ -1287,23 +1674,248 @@ fn main() {
                             // print!("read{:?}", read / 2 / 2);
                         }
                     }
-                    sleep(Duration::from_millis(10));
+                    // print!("{} {:?} ", name, Instant::now().duration_since(start));
+                    sleep(Duration::from_millis(1));
                     // yield_now();
                 }
+            }
+        };
+
+        let http_audio_stream_factory = move |name, stream_mutex| {
+            let cb = audio_stream_factory(name, stream_mutex);
+            move |req: &mut Request| {
+                cb(&mut req.body);
 
                 Ok(Response::with((status::Ok, "Ok")))
+            }
+        };
+
+        let audio_stream_factory = move |name, stream_mutex: Arc<Mutex<RingBuffer>>| {
+            move |stream: &mut Read| {
+                // if let request::Body(reader) = req.body {
+                //     match reader {
+                //         HttpReader::EofReader(reader) => {
+                //             reader.set_read_timeout(Duration::from_millis(1));
+                //         },
+                //         _ => {},
+                //     }
+                // }
+
+                println!("{}", name);
+                let mut buffer = Vec::<i16>::new();
+                for _ in 0..9600 {
+                    buffer.push(0);
+                }
+                let mut last_read = Instant::now();
+                let mut inner = RingBuffer::new();
+
+                // sleep(Duration::from_millis(20));
+                let mut music_last = Instant::now();
+                let mut sample_error = 0;
+
+                loop {
+                    // let start = Instant::now();
+                    // let since_last = Instant::now();
+                    // let since = since_last.duration_since(music_last);
+                    // let mut samples = (((since.subsec_nanos() + sample_error as u32) as f64 / 1000000.0).floor() as usize) * 48;
+                    // samples = min(samples, 192);
+                    // sample_error = (since.subsec_nanos() as usize + sample_error - samples / 48 * 1000000) as usize;
+                    // music_last = since_last;
+                    let samples = 192;
+                    // print!("{} {} ", name, samples);
+                    let mut should_yield = false;
+                    if samples > 0 {
+                        match unsafe {
+                            let buffer_ptr = buffer.as_mut_ptr();
+                            let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, samples * 2 * 2);
+                            stream.read(slice)
+                        } {
+                            Ok(read) => {
+                                sample_error += (samples - read / 2 / 2) * 1000000 / 48;
+                                // print!("{} {} ", name, read);
+                                inner.write_from(read / 2, &buffer);
+                                should_yield = true;
+                            },
+                            Err(error) => {
+                                if error.kind() == ErrorKind::WouldBlock {
+                                    // sleep(Duration::from_millis(1));
+                                    // yield_now();
+                                    should_yield = true;
+                                }
+                                else {
+                                    println!("{:?} {:?}", error.kind(), error);
+                                    if let Ok(mut http_music) = (*stream_mutex).lock() {
+                                        (*http_music).clear();
+                                        // print!("read{:?}", read / 2 / 2);
+                                    }
+                                    println!("break {:?}", name);
+                                    break;
+                                }
+                            },
+                        }
+                    }
+                    if Instant::now().duration_since(last_read).as_secs() > 1 {
+                        if let Ok(mut http_music) = (*stream_mutex).lock() {
+                            (*http_music).clear();
+                            // print!("read{:?}", read / 2 / 2);
+                        }
+                        println!("break {:?}", name);
+                        break;
+                    }
+                    if inner.len() > 0 {
+                        last_read = Instant::now();
+                        if let Ok(mut http_music) = (*stream_mutex).try_lock() {
+                            if (*http_music).len() < 6144 {
+                                (*http_music).write_from_ring(inner.len(), &mut inner);
+                            }
+                            else {
+                                should_yield = true;
+                                inner.clear();
+                            }
+                            // print!("read{:?}", read / 2 / 2);
+                        }
+                        else {
+                            should_yield = true;
+                        }
+                    }
+                    else {
+                        should_yield = true;
+                    }
+                    // print!("{} {:?} ", name, Instant::now().duration_since(start));
+                    if should_yield {
+                        sleep(Duration::from_millis(2));
+                        // yield_now();
+                    }
+                }
+            }
+        };
+
+        let tcp_audio_stream_factory = move |name, stream_mutex| {
+            let cb = audio_stream_factory(name, stream_mutex);
+            move |mut stream: TcpStream| {
+                // stream.set_read_timeout(Some(Duration::from_millis(1))).unwrap();
+                stream.set_nonblocking(true).unwrap();
+                cb(&mut stream);
+            }
+        };
+
+        let chrome_device_gate_http = chrome_device_gate.clone();
+
+        thread::spawn(move || {
+            let renderFactory = || {
+                let chrome_device_gate_render = chrome_device_gate_http.clone();
+                move || {
+                    let chrome_gate = if let Ok(gate) = chrome_device_gate_render.lock() {
+                        if *gate {
+                        // if gate.get() {
+                            "On"
+                        }
+                        else {
+                            "Off"
+                        }
+                    } else {
+                        "Unavailable"
+                    };
+                    let mut response = Response::with((status::Ok,
+format!(r#"
+<!doctype html>
+<html>
+<head></head>
+<body>
+<h2>Tessel Music Server</h2>
+
+<form method="post">
+<p>Music to Chat <button type="submit" name="music">On</button></p>
+<p>Chrome to Chat <button type="submit" name="chrome" value="chrome">{}</button></p>
+</form>
+</body>
+</html>
+"#, chrome_gate)
+                    ));
+                    response.headers.set(ContentType(Mime(TopLevel::Text, SubLevel::Html, vec![])));
+                    Ok(response)
+                }
             };
+
+            let renderIndex = renderFactory();
+            let index = move |_: &mut Request| {
+                renderIndex()
+            };
+
+            let renderPostIndex = renderFactory();
+            let chrome_device_gate_http = chrome_device_gate_http.clone();
+            let postIndex = move |req: &mut Request| {
+                let mut body_vec = Vec::new();
+                req.body.read_to_end(&mut body_vec).unwrap();
+                let body = String::from_utf8(body_vec).unwrap();
+                println!("body {:?}", body);
+                if body.contains("chrome") {
+                    if let Ok(mut gate) = chrome_device_gate_http.lock() {
+                        *gate = !*gate;
+                        // gate.set(!gate.get());
+                    }
+                }
+                renderPostIndex()
+            };
+
+            let music = http_audio_stream_factory("music", http_music_mutex_clone);
+            let chrome = http_audio_stream_factory("chrome", http_chrome_mutex_clone);
 
             Iron::new(router!(
                 index: get "/" => index,
-                music: post "/music/" => music,
-            )).http("0.0.0.0:80").unwrap();
+                postIndex: post "/" => postIndex,
+                music: post "/music" => music,
+                chrome: post "/chrome" => chrome,
+            )).listen_with("0.0.0.0:80", 8, Protocol::Http, Some(Timeouts {
+                // read: Some(Duration::from_millis(10)),
+                ..Default::default()
+            })).unwrap();
         });
+
+        let music = tcp_audio_stream_factory("music", tcp_music_mutex_clone);
+
+        thread::spawn(move || {
+            let listener = TcpListener::bind("0.0.0.0:7777").unwrap();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        music(stream);
+                    },
+                    Err(_) => {},
+                }
+            }
+        });
+
+        let chrome = tcp_audio_stream_factory("chrome", tcp_chrome_mutex_clone);
+
+        thread::spawn(move || {
+            let listener = TcpListener::bind("0.0.0.0:7778").unwrap();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        chrome(stream);
+                    },
+                    Err(_) => {},
+                }
+            }
+        });
+
+        let mut steps = 0;
 
         loop {
             // sleep(Duration::from_millis(1));
-            yield_now();
-            graph.update();
+            if steps > 100 {
+                let now = Instant::now();
+                yield_now();
+                graph.update();
+                // print!("{} ", Instant::now().duration_since(now).subsec_nanos());
+                steps = 0;
+            }
+            else {
+                yield_now();
+                graph.update();
+            }
+            steps += 1;
         }
     }
 }
