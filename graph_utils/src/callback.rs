@@ -20,22 +20,55 @@ impl Callback {
 
 impl Node for Callback {
     fn update(&mut self, inputs: &mut [RingBuffer], outputs: &mut [RingBuffer]) {
-        let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
-        self.base_mix.mix_inputs_ring(inputs, &mut in_buffer);
-        // in_buffer.write_from(in_avail, &self.base_mix.accum);
-        // if outputs.len() == 1 {
-        //     (self.callback)(&mut in_buffer, &mut outputs[0]);
-        // }
-        // else {
-            // print!("{:?} ", out_buffer.buffer.as_ptr());
+        if inputs.len() == 0 && outputs.len() == 0 {
+            return;
+        }
+        if inputs.len() == 0 && outputs.len() == 1 {
+            let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
+            let mut output = &mut outputs[0];
+            output.active = in_buffer.active;
+            (self.callback)(&mut in_buffer, output);
+            self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+        }
+        if inputs.len() == 1 && outputs.len() == 0 {
+            let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
+            let mut input = &mut inputs[0];
+            out_buffer.active = input.active;
+            (self.callback)(input, &mut out_buffer);
+            self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+        }
+        else if inputs.len() == 1 && outputs.len() == 1 {
+            let mut input = &mut inputs[0];
+            let mut output = &mut outputs[0];
+            output.active = input.active;
+            (self.callback)(input, output);
+        }
+        else if inputs.len() == 1 {
+            let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
+            let ref mut input = inputs[0];
+            out_buffer.active = input.active;
+            (self.callback)(input, &mut out_buffer);
+            let out_avail = out_buffer.len();
+            copy_out_ring(out_avail, &mut sub_buffer, &mut out_buffer, outputs);
+            self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+        }
+        else if outputs.len() == 1 {
+            let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
+            self.base_mix.mix_inputs_ring(inputs, &mut in_buffer);
+            let ref mut output = outputs[0];
+            output.active = in_buffer.active;
+            (self.callback)(&mut in_buffer, output);
+            self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+        }
+        else {
+            let (mut in_buffer, mut out_buffer, mut sub_buffer) = self.tmp_state.take().unwrap();
+            self.base_mix.mix_inputs_ring(inputs, &mut in_buffer);
             out_buffer.active = in_buffer.active;
             (self.callback)(&mut in_buffer, &mut out_buffer);
             let out_avail = out_buffer.len();
-            // out_buffer.read_into(out_avail, &mut sub_buffer);
-            // copy_out(out_avail, &sub_buffer, outputs);
             copy_out_ring(out_avail, &mut sub_buffer, &mut out_buffer, outputs);
-        // }
-        self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+            self.tmp_state = Some((in_buffer, out_buffer, sub_buffer));
+        }
     }
 }
 

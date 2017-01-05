@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::ops::{Index, IndexMut};
 
 #[derive(Debug)]
 pub struct RingBuffer {
@@ -50,6 +51,20 @@ impl RingBuffer {
         self.end_index = 0;
     }
 
+    pub fn read_slice<'a>(&'a mut self, amount: usize) -> RingSlice<'a> {
+        let avail = min(amount, self.len());
+        let start_index = self.start_index;
+        self.start_index += avail;
+        if self.start_index > self.max_length {
+            self.start_index -= self.max_length + 1;
+        }
+        RingSlice {
+            _len: avail,
+            start: start_index,
+            ring: self,
+        }
+    }
+
     pub fn read_into(&mut self, amount: usize, buffer: &mut Vec<i16>) -> usize {
         assert!(amount >= 0);
         let amount_avail = min(amount, self.len());
@@ -66,9 +81,9 @@ impl RingBuffer {
         amount_avail
     }
 
-    pub fn write_from(&mut self, amount: usize, buffer: &Vec<i16>) -> usize {
+    fn _write_from(&mut self, amount: usize, buffer: &Index<usize, Output=i16>) -> usize {
         assert!(amount >= 0);
-        let amount_avail = min(min(amount, buffer.len()), self.max_length);
+        let amount_avail = min(amount, self.max_length);
         for _ in self.buffer.len()..min(self.end_index + amount_avail + 1, self.max_length + 1) {
             self.buffer.push(0);
         }
@@ -86,6 +101,14 @@ impl RingBuffer {
             }
         }
         amount_avail
+    }
+
+    pub fn write_from(&mut self, amount: usize, buffer: &Vec<i16>) -> usize {
+        self._write_from(min(amount, buffer.len()), buffer)
+    }
+
+    pub fn write_from_read_slice(&mut self, amount: usize, buffer: &RingSlice) -> usize {
+        self._write_from(min(amount, buffer.len()), buffer)
     }
 
     pub fn write_from_ring(&mut self, amount: usize, ring: &mut RingBuffer) -> usize {
@@ -112,6 +135,40 @@ impl RingBuffer {
             }
         }
         amount_avail
+    }
+}
+
+pub struct RingSlice<'a> {
+    _len: usize,
+    start: usize,
+    ring: &'a mut RingBuffer,
+}
+
+impl<'a> RingSlice<'a> {
+    pub fn len(&self) -> usize {
+        self._len
+    }
+}
+
+impl<'a> Index<usize> for RingSlice<'a> {
+    type Output = i16;
+    fn index(&self, mut index: usize) -> &Self::Output {
+        assert!(index < self._len);
+        index += self.start;
+        if index > self.ring.max_length {
+            index -= self.ring.max_length + 1;
+        }
+        &self.ring.buffer[index]
+    }
+}
+
+impl<'a> IndexMut<usize> for RingSlice<'a> {
+    fn index_mut(&mut self, mut index: usize) -> &mut Self::Output {
+        index += self.start;
+        if index > self.ring.max_length {
+            index -= self.ring.max_length + 1;
+        }
+        &mut self.ring.buffer[index]
     }
 }
 

@@ -40,45 +40,50 @@ impl BaseMix {
         // print!("{:?} {:?} ", avail, inputs.iter().map(|x| (x.active, x.len())).collect::<Vec<(bool, usize)>>());
         for _ in self.accum.len()..avail {
             self.accum.push(0);
-            self.read_copy.push(0);
+            // self.read_copy.push(0);
         }
         for i in 0..avail {
             self.accum[i] = 0;
         }
-        let num_inputs = inputs.len();
-        // if inputs.len() > 0 {
-        //     inputs[0].read_into(avail, &mut self.accum);
+        let num_inputs = inputs.iter().filter(|x| x.active).count();
+        // if num_inputs == 1 {
+        //
         // }
-        // for input in inputs.iter_mut().skip(1) {
-        //     input.read_into(avail, &mut self.read_copy);
-        // }
-        // if inputs.len() > 0 {
-        //     inputs[num_inputs - 1].read_into(avail, &mut self.accum);
-        // }
-        // for input in inputs.iter_mut().take(num_inputs - 1) {
-        //     input.read_into(avail, &mut self.read_copy);
-        // }
-        for input in inputs.iter_mut() {
-            if input.active && input.len() > 0 {
-                assert!(input.len() >= avail);
-                for i in 0..avail {
-                    self.read_copy[i] = 0;
-                }
-                input.read_into(avail, &mut self.read_copy);
-                for i in 0..avail {
-                    self.accum[i] += self.read_copy[i];
-                    // self.accum[i] = (self.accum[i] + self.read_copy[i]) / 2;
-                    // self.accum[i] = (((self.accum[i] + self.read_copy[i]) as f32 / 32767.0).tanh() * 32767.0) as i16;
+        // else {
+            for input in inputs.iter_mut() {
+                if input.active && input.len() > 0 {
+                    assert!(input.len() >= avail);
+                    // for i in 0..avail {
+                    //     self.read_copy[i] = 0;
+                    // }
+                    let slice = input.read_slice(avail);
+                    // input.read_into(avail, &mut self.read_copy);
+                    for i in 0..avail {
+                        self.accum[i] += slice[i];
+                    }
                 }
             }
-        }
+        // }
         avail
     }
 
     pub fn mix_inputs_ring(&mut self, inputs: &mut [RingBuffer], ring: &mut RingBuffer) {
-        let avail = self.mix_inputs(inputs);
-        ring.active = inputs.len() > 0 && inputs.iter().any(|x| x.active);
-        ring.write_from(avail, &self.accum);
+        let num_inputs = inputs.iter().filter(|x| x.active).count();
+        if num_inputs == 0 {
+            ring.active = false;
+            return;
+        }
+        else if num_inputs == 1 {
+            let mut input = inputs.iter_mut().filter(|x| x.active).nth(0).unwrap();
+            let avail = input.len();
+            ring.active = input.active;
+            ring.write_from_ring(avail, input);
+        }
+        else {
+            let avail = self.mix_inputs(inputs);
+            ring.active = inputs.len() > 0 && inputs.iter().any(|x| x.active);
+            ring.write_from(avail, &self.accum);
+        }
     }
 }
 
