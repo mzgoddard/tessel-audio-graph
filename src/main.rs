@@ -1037,10 +1037,10 @@ fn main() {
             let mut samples = 0;
             Box::new(Callback::new(Box::new(move |input, output| {
                 let avail = input.len();
-                let mut slice = input.read_slice(avail);
+                let slice = input.read_slice(avail);
                 samples += slice.len() / 2;
-                for i in 0..slice.len() {
-                    if slice[i] > peak {
+                for i in slice.iter() {
+                    if *i > peak {
                         active = true;
                         gate.set(true);
                         // last_peak = Instant::now();
@@ -1048,30 +1048,33 @@ fn main() {
                     }
                 }
                 if !active {
-                    for i in 0..slice.len() {
-                        slice[i] = 0;
+                    for o in output.write_slice(avail).iter_mut() {
+                        *o = 0;
                     }
                 }
-                output.write_from_read_slice(slice.len(), &slice);
-                if active && samples > 48000 {
-                    active = false;
-                    gate.set(false);
+                else {
+                    output.write_from_read_slice(slice.len(), &slice);
+                    if active && samples > 48000 {
+                        active = false;
+                        gate.set(false);
+                    }
                 }
             })))
         };
 
         let ducked = |gate: Vec<Rc<Cell<bool>>>, volume: (i32, i32)| {
-            let mut buffer = Vec::new();
             Box::new(Callback::new(Box::new(move |input, output| {
                 if !input.active {return;}
                 let avail = input.len();
-                input.read_into(avail, &mut buffer);
+                let slice = input.read_slice(avail);
                 if gate.iter().any(|gate| gate.get()) {
-                    for i in 0..avail {
-                        buffer[i] = (buffer[i] as i32 * volume.0 / volume.1) as i16;
+                    for (i, o) in slice.iter().zip(output.write_slice(avail).iter_mut()) {
+                        *o = (*i as i32 * volume.0 / volume.1) as i16;
                     }
                 }
-                output.write_from(avail, &buffer);
+                else {
+                    output.write_from_read_slice(avail, &slice);
+                }
             })))
         };
 
@@ -1088,12 +1091,10 @@ fn main() {
         };
 
         let lean = |max_amount| {
-            let mut buffer = Vec::new();
             Box::new(Callback::new(Box::new(move |input, output| {
                 let mut avail = min(input.len(), max_amount);
-                input.read_into(avail, &mut buffer);
+                output.write_from_ring(avail, input);
                 input.clear();
-                output.write_from(avail, &buffer);
             })))
         };
 
@@ -1166,19 +1167,20 @@ fn main() {
         // };
 
         let mono_to_stereo = || {
-            let mut buffer = Vec::new();
             Box::new(Callback::new(Box::new(move |input, output| {
                 let avail = input.len();
-                input.read_into(avail, &mut buffer);
-                for _ in buffer.len()..avail * 2 {
-                    buffer.push(0);
+                if avail > 0 {
+                    let slice = input.read_slice(avail);
+                    let mut out_slice = output.write_slice(avail * 2);
+                    let mut slice_iter = slice.iter();
+                    let mut i = 0;
+                    for (index, o) in out_slice.iter_mut().enumerate() {
+                        if index % 2 == 0 {
+                            i = *slice_iter.next().unwrap();
+                        }
+                        *o = i;
+                    }
                 }
-                for i in (0..avail).rev() {
-                    buffer[i * 2] = buffer[i];
-                    buffer[i * 2 + 1] = buffer[i];
-                }
-                output.write_from(avail * 2, &buffer);
-                // print!("{:?} {:?} {:?} ", avail, (0..2).rev().nth(0), (0..2).rev().last());
             })))
         };
 
@@ -1449,8 +1451,6 @@ fn main() {
         });
 
         let r48_to_r44 = || {
-            let mut silence_buffer = Vec::new();
-            let mut out_buffer = Vec::new();
             let mut frames = 9;
             Box::new(Callback::new(Box::new(move |input, output| {
                 let mut avail = input.len();
@@ -1468,16 +1468,12 @@ fn main() {
                     }
                 }
 
-                input.read_into(num, &mut silence_buffer);
+                let slice = input.read_slice(num);
+                let mut out_slice = output.write_slice(denom);
 
-                for _ in out_buffer.len()..denom {
-                    out_buffer.push(0);
+                for (index, o) in out_slice.iter_mut().enumerate() {
+                    *o = slice[index / 2 * num / denom * 2 + index % 2];
                 }
-                for i in 0..denom {
-                    out_buffer[i] = silence_buffer[i / 2 * num / denom * 2 + i % 2];
-                }
-
-                output.write_from(denom, &out_buffer);
             })))
         };
 
@@ -1561,7 +1557,7 @@ fn main() {
             ..Default::default()
         }), GraphNodeParams { ..Default::default() });
 
-        let transmitter_lean_id = graph.connect(lean(1536), GraphNodeParams {
+        let transmitter_lean_id = graph.connect(lean(768), GraphNodeParams {
             to: vec!(transmitter_out_id),
             ..Default::default()
         });
@@ -1617,8 +1613,6 @@ fn main() {
         // });
 
         let r44_to_r48 = || {
-            let mut silence_buffer = Vec::new();
-            let mut out_buffer = Vec::new();
             let mut frames = 0;
             Box::new(Callback::new(Box::new(move |input, output| {
                 let mut avail = input.len();
@@ -1636,16 +1630,12 @@ fn main() {
                     }
                 }
 
-                input.read_into(num, &mut silence_buffer);
+                let slice = input.read_slice(num);
+                let mut out_slice = output.write_slice(denom);
 
-                for _ in out_buffer.len()..denom {
-                    out_buffer.push(0);
+                for (index, o) in out_slice.iter_mut().enumerate() {
+                    *o = slice[index / 2 * num / denom * 2 + index % 2];
                 }
-                for i in 0..denom {
-                    out_buffer[i] = silence_buffer[i / 2 * num / denom * 2 + i % 2];
-                }
-
-                output.write_from(denom, &out_buffer);
             })))
         };
 
@@ -1715,7 +1705,7 @@ fn main() {
                 // ("Speaker Playback Volume", (vec!((0, HCtlValue::Integer(22)), (1, HCtlValue::Integer(22))))),
                 // ("Mic Capture Volume", vec!((0, HCtlValue::Integer(4)))),
                 // ("Auto Gain Control", (vec!((0, HCtlValue::Boolean(false))))),
-                ("PCM Capture Source", vec!((0, HCtlValue::Enumerated(0)))),
+                ("PCM Capture Source", vec!((0, HCtlValue::Enumerated(1)))),
             ].into_iter().collect(),
             ..Default::default()
         }), GraphNodeParams {
@@ -1746,15 +1736,16 @@ fn main() {
 
         let mic_in_duck = graph.connect(duck(5500, mic_duck_gate.clone()), GraphNodeParams {
             to: vec!(transmitter_mix_id, device_mix_id),
+            // to: vec!(device_mix_id),
             ..Default::default()
         });
 
-        let chat_sampled = Rc::new(RefCell::new(0));
+        // let chat_sampled = Rc::new(RefCell::new(0));
 
-        let mic_dependent_clock_id = graph.connect(dependent_clock(chat_sampled.clone()), GraphNodeParams {
-            to: vec!(mic_in_duck),
-            ..Default::default()
-        });
+        // let mic_dependent_clock_id = graph.connect(dependent_clock(chat_sampled.clone()), GraphNodeParams {
+        //     to: vec!(mic_in_duck),
+        //     ..Default::default()
+        // });
 
         // let mut silence_buffer = Vec::new();
         // let mut out_buffer = Vec::new();
@@ -1798,18 +1789,13 @@ fn main() {
             ..Default::default()
         }), GraphNodeParams {
             // to: vec!(streammic_volume_id),
-            to: vec!(mic_dependent_clock_id),
+            to: vec!(mic_in_duck),
             // to: vec!(transmitter_out_id),
             ..Default::default()
         });
 
-        // let lean_in_id = graph.connect(lean(768), GraphNodeParams {
-        //     to: vec!(mic_dependent_clock_id),
-        //     ..Default::default()
-        // });
-
         let transmitter_stereo_id = graph.connect(mono_to_stereo(), GraphNodeParams {
-            to: vec!(mic_dependent_clock_id),
+            to: vec!(mic_in_duck),
             ..Default::default()
         });
 
@@ -1874,26 +1860,26 @@ fn main() {
             })))
         };
 
-        let content_throw_away_first_id = graph.connect(throw_away_first_4(), GraphNodeParams {
+        // let content_throw_away_first_id = graph.connect(throw_away_first_4(), GraphNodeParams {
+        //     to: vec!(transmitter_mix_id),
+        //     ..Default::default()
+        // });
+
+        // let content_dependency_clock_id = graph.connect(dependency_clock(chat_sampled.clone()), GraphNodeParams {
+        //     to: vec!(transmitter_mix_id),
+        //     ..Default::default()
+        // });
+
+        let content_duck_id = graph.connect(ducked(vec!(mic_duck_gate, device_duck_gate), (1, 5)), GraphNodeParams {
             to: vec!(transmitter_mix_id),
             ..Default::default()
         });
 
-        let content_dependency_clock_id = graph.connect(dependency_clock(chat_sampled.clone()), GraphNodeParams {
-            to: vec!(transmitter_mix_id),
-            ..Default::default()
-        });
-
-        let content_duck_id = graph.connect(ducked(vec!(mic_duck_gate, device_duck_gate), (2, 5)), GraphNodeParams {
-            to: vec!(transmitter_mix_id),
-            ..Default::default()
-        });
-
-        let music_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
-            to: vec!(content_duck_id),
-            // to: vec!(transmitter_mix_id),
-            ..Default::default()
-        });
+        // let music_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
+        //     to: vec!(content_duck_id),
+        //     // to: vec!(transmitter_mix_id),
+        //     ..Default::default()
+        // });
 
         // let music_buffer_id = graph.connect(sound_buffer("music", 6144, 768, 0, 768), GraphNodeParams {
         //     to: vec!(music_fade_in_id),
@@ -1916,10 +1902,22 @@ fn main() {
         let mut paused = false;
         let mut samples = 0;
         let http_music_in_id = graph.connect(Box::new(Capture::new(Box::new(move |output| {
-            if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
+            let music_len = {
+                if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
+                    let len = http_music.len();
+                    if state != 2 {
+                        http_music.clear();
+                    }
+                    len
+                }
+                else {
+                    0
+                }
+            };
+            // if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
                 // let now = Instant::now();
                 output.active = false;
-                if state == 0 && (*http_music).len() > 0 {
+                if state == 0 && music_len > 0 {
                     if let Ok(mut activating) = activating_device_clone.lock() {
                         if *activating == -1 {
                             // activation_start = now;
@@ -1930,28 +1928,28 @@ fn main() {
                         }
                     }
                     // last_received = now;
-                    (*http_music).clear();
+                    // (*http_music).clear();
                 }
-                // else if state == 1 && (*http_music).len() > 0 && now.duration_since(activation_start).as_secs() > 0 {
-                else if state == 1 && (*http_music).len() > 0 && samples > 192000 {
+                // else if state == 1 && music_len > 0 && now.duration_since(activation_start).as_secs() > 0 {
+                else if state == 1 && music_len > 0 && samples > 192000 {
                     if let Ok(mut activating) = activating_device_clone.lock() {
                         if *activating == activating_id {
                             *activating = -1;
                             println!("activated http music");
                             // last_received = now;
-                            (*http_music).clear();
+                            // (*http_music).clear();
                             samples = 0;
                             state = 2;
                         }
                         else {
                             // last_received = now;
-                            (*http_music).clear();
+                            // (*http_music).clear();
                             state = 0;
                         }
                     }
                 }
-                // else if state == 1 && (*http_music).len() == 0 && now.duration_since(activation_start).as_secs() > 1 {
-                else if state == 1 && (*http_music).len() == 0 && samples > 288000 {
+                // else if state == 1 && music_len == 0 && now.duration_since(activation_start).as_secs() > 1 {
+                else if state == 1 && music_len == 0 && samples > 288000 {
                     if let Ok(mut activating) = activating_device_clone.lock() {
                         if *activating == activating_id {
                             *activating = -1;
@@ -1960,19 +1958,18 @@ fn main() {
                         }
                     }
                 }
-                else if state == 1 && (*http_music).len() > 0 {
-                    samples += (*http_music).len();
+                else if state == 1 && music_len > 0 {
+                    samples += music_len;
                     // last_received = now;
-                    (*http_music).clear();
+                    // (*http_music).clear();
                 }
                 else if state == 1 {
                     // last_received = now;
                     samples += 20;
                 }
-                else if state == 2 && (*http_music).len() > 0 {
-                    // last_received = now;
-                    // samples += (*http_music).len();
+                else if state == 2 && music_len > 0 {
                     samples = 0;
+
                     if let Ok(mut activating) = activating_device_clone.lock() {
                         if *activating != -1 {
                             if !paused {
@@ -1987,97 +1984,40 @@ fn main() {
                             paused = false;
                         }
                     }
-                    if !paused {
-                        output.active = true;
-                        output.write_from_ring((*http_music).len(), &mut *http_music);
-                    }
-                    else {
-                        (*http_music).clear();
+                    output.active = !paused;
+
+                    if let Ok(mut http_music) = (*http_music_mutex).try_lock() {
+                        if !paused {
+                            output.write_from_ring((*http_music).len(), &mut *http_music);
+                        }
+                        else {
+                            (*http_music).clear();
+                        }
                     }
                 }
-                // else if state == 2 && (*http_music).len() == 0 && now.duration_since(last_received).as_secs() < 1 {
-                else if state == 2 && (*http_music).len() == 0 && samples < 48000 {
+                // else if state == 2 && music_len == 0 && now.duration_since(last_received).as_secs() < 1 {
+                else if state == 2 && music_len == 0 && samples < 48000 {
                     samples += 20;
                     output.active = !paused;
                 }
-                // else if state == 2 && (*http_music).len() == 0 && now.duration_since(last_received).as_secs() > 0 {
-                else if state == 2 && (*http_music).len() == 0 && samples >= 48000 {
+                // else if state == 2 && music_len == 0 && now.duration_since(last_received).as_secs() > 0 {
+                else if state == 2 && music_len == 0 && samples >= 48000 {
                     state = 0;
                 }
-                // let was_active = output.active;
-                // output.active = (*http_music).len() > 0 || now.duration_since(last_received).subsec_nanos() < 25000000;
-                // if !was_active && output.active {
-                //     activation_start = now;
-                //     if let Ok(mut activating) = activating_device_clone.lock() {
-                //         if *activating == -1 {
-                //             *activating = activating_id;
-                //             println!("activating http music");
-                //         }
-                //         else if *activating != activating_id {
-                //             output.active = false;
-                //         }
-                //     }
-                //     else {
-                //         return;
-                //     }
-                // }
-                // else if output.active && now.duration_since(activation_start).as_secs() > 0 {
-                //     if let Ok(mut activating) = activating_device_clone.lock() {
-                //         if *activating == activating_id {
-                //             *activating = -1;
-                //             println!("activated http music");
-                //         }
-                //         else if *activating != -1 {
-                //             return;
-                //         }
-                //         else {
-                //             if (*http_music).len() > 0 {
-                //                 last_received = now;
-                //             }
-                //             if output.active {
-                //                 output.write_from_ring((*http_music).len(), &mut *http_music);
-                //             }
-                //             else {
-                //                 (*http_music).clear();
-                //             }
-                //         }
-                //     }
-                //     else {
-                //         return;
-                //     }
-                // }
-                // else if !output.active {
-                //     if let Ok(mut activating) = activating_device_clone.lock() {
-                //         if *activating == activating_id {
-                //             *activating = -1;
-                //             println!("didn't activate http music");
-                //         }
-                //     }
-                // }
-            }
-            {
-                // let music_connected = {
-                //     let net_guard = net_music_tick_pair_node.0.lock().unwrap();
-                //     *net_guard != -1
-                // };
-                // if music_connected {
-                    net_music_tick_pair_node.1.notify_one();
-                    yield_now();
-                // }
-            }
+            // }
         }))), GraphNodeParams {
             // to: vec!(music_buffer_id),
             // to: vec!(music_fade_in_id),
-            // to: vec!(content_duck_id),
-            to: vec!(transmitter_mix_id),
-            ..Default::default()
-        });
-
-        let chrome_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
             to: vec!(content_duck_id),
             // to: vec!(transmitter_mix_id),
             ..Default::default()
         });
+
+        // let chrome_fade_in_id = graph.connect(fade_in(), GraphNodeParams {
+        //     to: vec!(content_duck_id),
+        //     // to: vec!(transmitter_mix_id),
+        //     ..Default::default()
+        // });
 
         // let chrome_buffer_id = graph.connect(sound_buffer("chrome", 6144, 768, 0, 768), GraphNodeParams {
         //     to: vec!(chrome_fade_in_id),
@@ -2204,7 +2144,7 @@ fn main() {
                     state = 0;
                 }
             }
-            net_chrome_tick_pair_node.1.notify_one();
+            // net_chrome_tick_pair_node.1.notify_one();
             // if let Ok(mut http_chrome) = (*http_chrome_mutex).try_lock() {
             //     let now = Instant::now();
             //     output.active = now.duration_since(last_received).subsec_nanos() < 25000000;
@@ -2216,7 +2156,7 @@ fn main() {
         }))), GraphNodeParams {
             // to: vec!(music_buffer_id),
             // to: vec!(chrome_buffer_id, chrome_gated_id),
-            to: vec!(chrome_fade_in_id, chrome_gated_id),
+            to: vec!(content_duck_id, chrome_gated_id),
             // to: vec!(transmitter_mix_id, device_out_id),
             ..Default::default()
         });
@@ -2253,68 +2193,22 @@ fn main() {
                 // {
                 //     let mut net_out_guard = net_out_mutex.lock().unwrap();
                 //     *net_out_guard = true;
-                //     net_out_condvar.notify_one();
                 // }
+                // println!("{} wait", name);
                 net_guard = net_condvar.wait(net_guard).unwrap();
 
-                // let mut total_read = 0;
-                // let start = Instant::now();
-                // loop {
-                //     if let Ok(read) = unsafe {
-                //         let buffer_ptr = buffer.as_mut_ptr();
-                //         let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, 96 * 2 * 2);
-                //         stream.read(slice)
-                //     } {
-                //         if read == 0 {
-                //             break;
-                //         }
-                //         total_read += read;
-                //         if Instant::now().duration_since(start).subsec_nanos() > 10000000 {
-                //             break;
-                //         }
-                //     }
-                //     else {
-                //         break;
-                //     }
-                // }
-                // println!("{} read {} {} {}", name, total_read, Instant::now().duration_since(start).as_secs(), Instant::now().duration_since(start).subsec_nanos());
-
                 let mut last_read = Instant::now();
-                let mut music_last = Instant::now();
-                let mut samples_received = 0u64;
                 loop {
                     if let Ok(should_shutdown) = should_shutdown_mutex.lock() {
                         if *should_shutdown {
                             break;
                         }
                     }
-                    // let start = Instant::now();
-                    // let since_last = Instant::now();
-                    // let since = since_last.duration_since(music_last);
-                    // let should_received = since.as_secs() * 48000 + since.subsec_nanos() as u64 / 1000000 * 48;
-                    // let mut samples = should_received - samples_received;
-                    // samples = min(samples, 1536);
-                    // samples_received += samples;
-                    // music_last = since_last;
-                    // let ms = (since.subsec_nanos() + sample_error as u32) / 1000000;
-                    // let mut samples = ms as usize * 48;
-                    // samples = min(samples, 1536);
-                    // // let samples = 192;
-                    // let ns = samples / 48 * 1000000;
-                    // sample_error = sample_error + since.subsec_nanos() as usize - ns as usize;
-                    // music_last = since_last;
-                    // print!("{} ", samples);
-                    // if samples > 0 {
+
                     let start = Instant::now();
                     let mut did_error = false;
-                    let since_last = Instant::now();
-                    let since = since_last.duration_since(music_last);
-                    let should_received = since.as_secs() * 48000 + since.subsec_nanos() as u64 / 1000000 * 48;
-                    loop {
-                        // let mut samples = should_received - samples_received;
-                        // samples = min(samples, 192);
-                        // samples_received += samples;
 
+                    loop {
                         let samples = 192;
                         match unsafe {
                             let buffer_ptr = buffer.as_mut_ptr();
@@ -2322,31 +2216,24 @@ fn main() {
                             stream.read(slice)
                         } {
                             Ok(read) => {
-                                // if read == 0 {
-                                //     break;
-                                // }
-                                // unsafe {
-                                //     let buffer_ptr = buffer.as_mut_ptr();
-                                //     let mut slice_read = slice::from_raw_parts_mut(buffer_ptr as *mut i8, samples * 2);
-                                //     let mut slice_write = slice::from_raw_parts_mut(buffer_ptr as *mut i16, samples * 2);
-                                //     for i in (0..samples).rev() {
-                                //         slice_write[i * 2] = (slice_read[i * 2]) as i16;
-                                //         slice_write[i * 2 + 1] = (slice_read[i * 2 + 1]) as i16;
-                                //     }
-                                // }
-                                // samples_received -= samples - read as u64 / 2 / 2;
-                                samples_received += read as u64 / 2 / 2;
-                                // sample_error += (samples - read / 2 / 2) * 1000000 / 48;
-                                // print!("{} {} ", name, read);
-                                inner.write_from(read / 2, &buffer);
-                                if Instant::now().duration_since(start).subsec_nanos() > 1500000 {
+                                let now = Instant::now();
+                                if read > 0 {
+                                    if let Ok(mut http_music) = stream_mutex.try_lock() {
+                                        last_read = now;
+                                        http_music.write_from(read / 2, &buffer);
+                                    }
+                                    else {
+                                        inner.write_from(read / 2, &buffer);
+                                    }
+                                }
+                                if now.duration_since(start).subsec_nanos() > 500000 {
                                     // print!("read for 2ms ");
                                     break;
                                 }
-                                if samples_received > should_received {
-                                    // print!("read enough samples ");
-                                    break;
-                                }
+                                // if samples_received > should_received {
+                                //     // print!("read enough samples ");
+                                //     break;
+                                // }
                                 // if read / 2 / 2 < samples as usize {
                                 if read == 0 {
                                     // print!("less than expected {} {} ", read / 2 / 2, samples);
@@ -2385,7 +2272,7 @@ fn main() {
                         // println!("sending {} upstream", name);
                         // samples_missed = 0;
                         last_read = Instant::now();
-                        if let Ok(mut http_music) = (*stream_mutex).try_lock() {
+                        if let Ok(mut http_music) = (*stream_mutex).lock() {
                             if (*http_music).len() < 16384 {
                                 (*http_music).write_from_ring(inner.len(), &mut inner);
                             }
@@ -2397,24 +2284,18 @@ fn main() {
                         }
                         else {
                             println!("couldn't lock upstream channel");
+                            break;
                         }
                     }
-                    // print!("{} {:?} ", name, Instant::now().duration_since(start));
-                    // sleep(Duration::from_millis(1));
+
                     // {
-                    //     let mut net_out_guard = net_out_mutex.lock().unwrap();
-                    //     // *net_out_guard = true;
+                    //     let net_out_guard = net_out_mutex.lock().unwrap();
                     //     net_out_condvar.notify_one();
                     // }
-                    // yield_now();
+                    // println!("{} wait", name);
                     net_guard = net_condvar.wait(net_guard).unwrap();
-                    // {
-                    //     let start = Instant::now();
-                    //     while Instant::now().duration_since(start).subsec_nanos() < 1000000 {
-                    //         yield_now();
-                    //     }
-                    // }
                 }
+
                 // {
                 //     let mut net_out_guard = net_out_mutex.lock().unwrap();
                 //     *net_out_guard = false;
@@ -2442,7 +2323,6 @@ fn main() {
                 }
                 let mut inner = RingBuffer::new();
 
-                // sleep(Duration::from_millis(20));
                 let mut sample_error = 0;
                 let mut samples_missed = 0;
 
@@ -2462,26 +2342,9 @@ fn main() {
                         let mut slice = slice::from_raw_parts_mut(buffer_ptr as *mut u8, samples as usize * 2 * 2);
                         stream.read(slice)
                     } {
-                        Ok(read) => {
-                            // samples_received += read as u64 / 2 / 2;
-                            // inner.write_from(read / 2, &buffer);
-                            // if Instant::now().duration_since(start).subsec_nanos() > 500000 {
-                            //     // print!("read for 2ms ");
-                            //     break;
-                            // }
-                            // if samples_received > should_received {
-                            //     // print!("read enough samples ");
-                            //     break;
-                            // }
-                            // // if read / 2 / 2 < samples as usize {
-                            // if read == 0 {
-                            //     // print!("read nothing ");
-                            //     break;
-                            // }
-                        },
+                        Ok(_) => {},
                         Err(err) => {
                             if err.kind() == ErrorKind::WouldBlock {
-                                // print!("would block {} ", Instant::now().duration_since(start).subsec_nanos());
                                 break;
                             }
                             else {
@@ -2498,8 +2361,7 @@ fn main() {
                 }
 
                 let mut last_read = Instant::now();
-                let mut music_last = Instant::now();
-                let mut samples_received = 0u64;
+
                 loop {
                     if let Ok(should_shutdown) = should_shutdown_mutex.lock() {
                         if *should_shutdown {
@@ -2509,9 +2371,7 @@ fn main() {
 
                     let start = Instant::now();
                     let mut did_error = false;
-                    let since_last = Instant::now();
-                    let since = since_last.duration_since(music_last);
-                    let should_received = since.as_secs() * 48000 + since.subsec_nanos() as u64 / 1000000 * 48;
+
                     loop {
                         let samples = 192;
                         match unsafe {
@@ -2520,9 +2380,17 @@ fn main() {
                             stream.read(slice)
                         } {
                             Ok(read) => {
-                                samples_received += read as u64 / 2 / 2;
-                                inner.write_from(read / 2, &buffer);
-                                if Instant::now().duration_since(start).subsec_nanos() > 500000 {
+                                let now = Instant::now();
+                                if read > 0 {
+                                    if let Ok(mut http_music) = stream_mutex.try_lock() {
+                                        last_read = now;
+                                        http_music.write_from(read / 2, &buffer);
+                                    }
+                                    else {
+                                        inner.write_from(read / 2, &buffer);
+                                    }
+                                }
+                                if now.duration_since(start).subsec_nanos() > 500000 {
                                     // print!("read for 2ms ");
                                     break;
                                 }
@@ -2588,8 +2456,8 @@ fn main() {
                             println!("couldn't lock upstream channel");
                         }
                     }
+
                     net_guard = net_condvar.wait(net_guard).unwrap();
-                    // yield_now();
                 }
                 *net_guard = -1;
             }
@@ -2821,7 +2689,10 @@ format!(r#"
                 // sleep(Duration::from_millis(1));
                 // yield_now();
                 graph.update();
-                print!("{} ", Instant::now().duration_since(now).subsec_nanos());
+                let ns = Instant::now().duration_since(now).subsec_nanos();
+                if ns > 1000000 {
+                    println!("{} ", ns);
+                }
                 steps = 0;
             }
             else {
@@ -2839,21 +2710,21 @@ format!(r#"
                 }
                 if now.duration_since(last_net_tick).subsec_nanos() > 1000000 {
                 //     // println!("notify music");
-                //     {
-                //         let music_in_guard = net_music_tick_pair.2.lock().unwrap();
-                //         // println!("lock music in playing? {:?}", *music_in_guard);
-                //         if *music_in_guard {
-                            {
-                                // let music_guard = net_music_tick_pair.0.lock().unwrap();
-                //                 // println!("lock inner mutex");
+                    // {
+                    //     let music_in_guard = net_music_tick_pair.2.lock().unwrap();
+                    //     // println!("lock music in playing? {:?}", *music_in_guard);
+                    //     if *music_in_guard {
+                    //         {
+                    //             let music_guard = net_music_tick_pair.0.lock().unwrap();
+                    //             // println!("lock inner mutex");
                                 net_music_tick_pair.1.notify_one();
                                 yield_now();
-                //                 // println!("notify inner condition");
-                            }
-                //             net_music_tick_pair.3.wait(music_in_guard).unwrap();
-                //             // println!("returned from music");
-                //         }
-                //     }
+                    //             // println!("notify inner condition");
+                    //         }
+                    //         net_music_tick_pair.3.wait(music_in_guard).unwrap();
+                    //         // println!("returned from music");
+                    //     }
+                    // }
                 //     {
                 //         let chrome_in_guard = net_chrome_tick_pair.2.lock().unwrap();
                 //         if *chrome_in_guard {
