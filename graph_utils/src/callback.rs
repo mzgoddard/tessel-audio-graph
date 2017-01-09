@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use super::{Node, RingBuffer, copy_out_ring, BaseMix};
 
 type CallbackFn = Box<FnMut(&mut RingBuffer, &mut RingBuffer)>;
@@ -8,6 +10,10 @@ pub struct Callback {
     callback: CallbackFn,
 }
 
+pub trait CallbackInner : Any {
+    fn get_callback(&mut self) -> &mut Callback;
+}
+
 impl Callback {
     pub fn new(callback: CallbackFn) -> Callback {
         Callback {
@@ -15,6 +21,24 @@ impl Callback {
             tmp_state: Some((RingBuffer::new(), RingBuffer::new(), Vec::<i16>::new())),
             callback: callback,
         }
+    }
+}
+
+// impl CallbackInner for Callback {
+//     fn callback(&mut self) -> &mut CallbackFn {
+//         self.callback
+//     }
+// }
+
+// impl<T: (Callback)> CallbackInner for T {
+//     fn get_callback(&mut self) -> &mut Callback {
+//         &mut self.0
+//     }
+// }
+
+impl<T : CallbackInner> Node for T {
+    fn update(&mut self, inputs: &mut [RingBuffer], outputs: &mut [RingBuffer]) {
+        self.get_callback().update(inputs, outputs);
     }
 }
 
