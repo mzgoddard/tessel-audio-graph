@@ -25,9 +25,8 @@ use alsa::ctl::{Ctl, ElemType, ElemValue};
 use alsa::hctl::{HCtl, Elem};
 use alsa::pcm::{PCM, HwParams, SwParams, Format, Access, State};
 
-use activation::*;
-
 use graph_utils::{Capture, Playback, RingBuffer};
+use graph_nodes::*;
 
 pub enum AlsaCardHint {
     AlsaNone,
@@ -119,6 +118,30 @@ impl AlsaHwParams {
         }
     }
 
+    pub fn new_44100hz_16ms() -> AlsaHwParams {
+        AlsaHwParams {
+            rate: 44100,
+            periods: 16,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_44100hz_8ms() -> AlsaHwParams {
+        AlsaHwParams {
+            rate: 44100,
+            periods: 8,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_44100hz_4ms() -> AlsaHwParams {
+        AlsaHwParams {
+            rate: 44100,
+            periods: 4,
+            ..Default::default()
+        }
+    }
+
     pub fn set_params(&self, pcm: &PCM) -> alsa::Result<()> {
         let hwp = match HwParams::any(&pcm) {
             Ok(hwp) => hwp,
@@ -174,6 +197,13 @@ impl Default for AlsaSwParams {
 }
 
 impl AlsaSwParams {
+    pub fn new_ms(ms: i32) -> AlsaSwParams {
+        AlsaSwParams {
+            avail_min: 48 * ms,
+            start_threshold: 48 * ms,
+        }
+    }
+
     pub fn new_2ms() -> AlsaSwParams {
         AlsaSwParams {
             avail_min: 48 * 2,
@@ -185,6 +215,13 @@ impl AlsaSwParams {
         AlsaSwParams {
             avail_min: 48 * 4,
             start_threshold: 48 * 4,
+        }
+    }
+
+    pub fn new_8ms() -> AlsaSwParams {
+        AlsaSwParams {
+            avail_min: 48 * 8,
+            start_threshold: 48 * 8,
         }
     }
 
@@ -470,7 +507,7 @@ impl AlsaCardList {
     }
 }
 
-struct AlsaCardIter<'a> {
+pub struct AlsaCardIter<'a> {
     range: Range<usize>,
     maybe_guard: Option<MutexGuard<'a, Vec<String>>>,
     tmp_vec: Vec<String>,

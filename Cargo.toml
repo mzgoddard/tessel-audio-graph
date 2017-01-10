@@ -1,12 +1,12 @@
 [package]
-name = "blinky"
+name = "tessel_audio_graph"
 version = "0.0.1"
 authors = ["Your Name <you@example.com>"]
 
 [dependencies]
 tessel = "0.2.0"
 alsa = "0.1.3"
-libusb = "0.3.0"
 iron = "0.4.0"
 router = "*"
 graph_utils = { path = "graph_utils" }
+graph_nodes = { path = "graph_nodes" }
