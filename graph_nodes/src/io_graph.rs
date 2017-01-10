@@ -93,6 +93,7 @@ impl IoNodeBuffer {
                 activation_guard = activation_controller_clone.activate();
                 if activation_guard.is_some() {
                     println!("activating http {}", name);
+                    last_received = Instant::now();
                     samples = 0;
                     state = 1;
                 }
@@ -103,18 +104,20 @@ impl IoNodeBuffer {
                 samples = 0;
                 state = 2;
             }
-            else if state == 1 && music_len == 0 && samples > 288000 {
+            else if state == 1 && music_len == 0 && Instant::now().duration_since(last_received).as_secs() > 3 {
                 activation_guard = None;
                 println!("didn't activate http {}", name);
                 state = 0;
             }
             else if state == 1 && music_len > 0 {
+                last_received = Instant::now();
                 samples += music_len;
             }
             else if state == 1 {
-                samples += 20;
+                // samples += 20;
             }
             else if state == 2 && music_len > 0 {
+                last_received = Instant::now();
                 samples = 0;
 
                 match activation_controller_clone.is_activating() {
@@ -145,10 +148,10 @@ impl IoNodeBuffer {
                 }
             }
             else if state == 2 && music_len == 0 && samples < 48000 {
-                samples += 20;
+                // samples += 20;
                 output.active = !paused;
             }
-            else if state == 2 && music_len == 0 && samples >= 48000 {
+            else if state == 2 && music_len == 0 && Instant::now().duration_since(last_received).as_secs() >= 2 {
                 state = 0;
             }
         }))))

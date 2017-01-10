@@ -10,12 +10,12 @@ impl CallbackInner for Rate {
 
 impl Rate {
     pub fn new(input_rate: usize, output_rate: usize) -> Box<Rate> {
-        let input_upper = input_rate / 1000;
-        let input_lower = input_rate % 1000;
+        let input_upper = input_rate * 2 / 1000;
+        let input_lower = input_rate * 2 % 1000;
         let input_upper_max = input_upper + if input_lower != 0 {1} else {0};
         let mut input_carry = 0;
-        let output_upper = output_rate / 1000;
-        let output_lower = output_rate % 1000;
+        let output_upper = output_rate * 2 / 1000;
+        let output_lower = output_rate * 2 % 1000;
         let output_upper_max = output_upper + if output_lower != 0 {1} else {0};
         let mut output_carry = 0;
         Box::new(Rate(Callback::new(Box::new(move |input, output| {
@@ -26,17 +26,17 @@ impl Rate {
             while num + input_upper_max <= avail {
                 num += input_upper;
                 input_carry += input_lower;
-                if input_carry > 1000 {
-                    let diff = input_carry / 1000;
-                    input_carry -= diff * 1000;
-                    num += diff;
+                if input_carry >= 2000 {
+                    let diff = input_carry / 2000;
+                    input_carry -= diff * 2000;
+                    num += diff * 2;
                 }
                 denom += output_upper;
                 output_carry += output_lower;
-                if output_carry > 1000 {
-                    let diff = output_carry / 1000;
-                    output_carry -= diff * 1000;
-                    denom += diff;
+                if output_carry >= 2000 {
+                    let diff = output_carry / 2000;
+                    output_carry -= diff * 2000;
+                    denom += diff * 2;
                 }
             }
 

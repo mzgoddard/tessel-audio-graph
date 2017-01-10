@@ -1,0 +1,7 @@
+[package]
+name = "graph_nodes"
+version = "0.1.0"
+authors = ["Michael \"Z\" Goddard <mzgoddard@gmail.com>"]
+
+[dependencies]
+graph_utils = { path = "../graph_utils" }
