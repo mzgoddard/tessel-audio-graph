@@ -37,11 +37,6 @@ function healthCheck(uri) {
 
 function lowBufferChild(cmd, cmdOpts) {
   const child = spawn(cmd[0], cmd.slice(1), cmdOpts);
-
-  let bufferIndex = 0;
-  buffer = new Buffer(96000);
-  const chunk = new Buffer(192);
-
   const originalStdout = child.stdout;
   originalStdout.pause();
 
@@ -77,7 +72,6 @@ function lowBufferChild(cmd, cmdOpts) {
 }
 
 function streamToServer(options, childStdout) {
-  let buffer;
   return new Promise((resolve, reject) => {
     const parsed = url.parse(options.url);
 
@@ -101,9 +95,6 @@ function streamToServer(options, childStdout) {
 
     req.setNoDelay(true);
 
-    let bufferIndex = 0;
-    buffer = new Buffer(96000);
-    const chunk = new Buffer(192);
 
     let connected = false;
     req.on('response', function(message) {
