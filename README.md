@@ -3,7 +3,7 @@
 - install rustup
 - `rustup toolchain install 1.12.0`
 - `rustup default 1.12.0`
-- cargo tessel install sdk
+- `cargo tessel install sdk`
 - copy contents of usr tar over sdk folder (`~/.tessel/sdk/macos/toolchain-mipsel_24kec+dsp_gcc-4.8-linaro_uClibc-0.9.33.2`). Should result in a pkgconfig folder under `~/.tessel/sdk/macos/toolchain-mipsel_24kec+dsp_gcc-4.8-linaro_uClibc-0.9.33.2/lib`.
 - configure env variables to compile with alsa (this could be skipped once sdk includes a pkgconfig binary)
 
